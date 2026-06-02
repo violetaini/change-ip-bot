@@ -1,0 +1,10 @@
+config.yaml
+id_rsa
+id_rsa.pub
+logs/
+__pycache__/
+*.py[cod]
+*.log
+.env
+venv/
+.venv/
