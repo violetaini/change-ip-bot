@@ -1,0 +1,43 @@
+telegram_bot_token: ""
+telegram_chat_id: ""
+# 可选：单独限制允许操作机器人的 Telegram 用户ID，留空时兼容旧逻辑：
+# 私聊按 telegram_chat_id 授权；群聊按 telegram_chat_id 中的群 chat_id 授权。
+telegram_allowed_user_ids: ""
+
+# 状态文件路径，可用环境变量 VPS_IP_BOT_STATE_FILE 覆盖
+state_file: "/var/lib/vps-ip-bot/state.json"
+
+# IP检查配置
+ip_check_cmd: "curl -s api-ipv4.ip.sb/ip"
+ip_check_api: ""
+ip_check_timeout: 60
+
+# IP更换配置
+ip_change_api: ""
+ip_change_interval: 2
+ip_change_timeout: 600
+ip_change_verify_public_ip: true
+ip_change_verify_delay: 5
+ip_change_retry_verify_count: 3
+
+# 自动换IP配置
+auto_change_enabled: false
+auto_change_interval_minutes: 360
+auto_change_notify: true
+
+# 华为云DNS配置（使用 AK/SK）
+huawei_dns_enabled: false
+huawei_ak: ""
+huawei_sk: ""
+huawei_dns_zone_name: ""
+huawei_dns_record_name: ""
+huawei_dns_record_type: "A"
+huawei_dns_ttl: 60
+
+# Ping配置
+ping_target: "1.1.1.1"
+ping_count: 10
+
+# IP质量检测配置
+ip_quality_enabled: true
+ip_quality_cmd: "bash <(curl -sL https://IP.Check.Place) -y"
