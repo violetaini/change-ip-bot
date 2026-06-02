@@ -168,3 +168,6 @@ journalctl -u vps-ip-bot -f
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
 
+## License
+
+This project is released under the MIT License. See [LICENSE](LICENSE) for details.
