@@ -14,7 +14,7 @@ This project is useful when your server provider, panel, or custom script expose
 - Send the result back to Telegram, with retry notification support.
 - Run scheduled automatic IP changes at a fixed Beijing time, with retry support.
 - Verify DNS propagation after automatic IP changes.
-- Run simple network tools such as ping, speedtest, and IP quality reports.
+- Run simple network tools such as ping, speedtest, IP quality reports, and streaming unlock checks.
 - Redact sensitive tokens and API keys before writing logs or sending logs to Telegram.
 
 ## Important Assumption
@@ -60,6 +60,7 @@ The bot also supports:
 /logs [N]   Show recent bot logs, redacted
 /health     Run a bot health check
 /quality    Run IP quality check and send an image report
+/stream     Run streaming unlock check and send a short summary
 /ping       Test network latency
 /speedtest  Run network speed test
 ```
@@ -76,6 +77,7 @@ cd /opt/vps-change-ip
 Create a virtual environment and install dependencies:
 
 ```bash
+apt install -y curl
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install -U pip
@@ -121,6 +123,9 @@ huawei_ak: ""
 huawei_sk: ""
 huawei_dns_zone_name: ""
 huawei_dns_record_name: ""
+stream_check_enabled: true
+stream_check_input: "1"
+stream_check_timeout: 1200
 ```
 
 `telegram_chat_id` can contain one or more chat IDs separated by commas.
@@ -180,6 +185,7 @@ journalctl -u vps-ip-bot -f
 - The bot stores runtime state in `/var/lib/vps-ip-bot/state.json` by default.
 - You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
+- `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
 - Automatic IP changes send the change result first, then verify DNS propagation, then send the IP quality image report.
 - Logs are redacted before writing and before being sent through `/logs`, but do not commit `config.yaml` or any backup containing secrets.

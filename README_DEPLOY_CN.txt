@@ -4,7 +4,7 @@ VPS IP Bot 简洁部署说明
 1. 安装基础环境：
    apt update
    apt install -y python3 python3-pip python3-venv unzip \
-      fonts-noto-cjk fonts-wqy-zenhei fonts-wqy-microhei
+      curl fonts-noto-cjk fonts-wqy-zenhei fonts-wqy-microhei
    如需优先用浏览器截图 /quality 报告，可额外安装 chromium；
    未安装 chromium 时会使用 Python 依赖中的 CairoSVG 渲染。
 
@@ -56,6 +56,7 @@ VPS IP Bot 简洁部署说明
    /logs
    /health
    /quality
+   /stream
 
 六、注册 systemd 服务
 执行：
@@ -95,6 +96,7 @@ systemctl status vps-ip-bot --no-pager
 4. 自动换 IP 默认关闭，可用 /auto_start 开启，/auto_stop 关闭，/auto_status 查看状态。
 5. 状态文件默认写入 /var/lib/vps-ip-bot/state.json，可通过 state_file 配置或 VPS_IP_BOT_STATE_FILE 环境变量覆盖。
 6. /quality 默认执行 IP.Check.Place 远程脚本，如不需要可设置 ip_quality_enabled: false，或用 ip_quality_cmd 指定自己的检测命令。
-7. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
-8. 自动换 IP 成功后会先发送换 IP 结果，再等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
-9. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。
+7. /stream 默认执行 1-stream/RegionRestrictionCheck 脚本，自动输入 1，并把结果整理成简报发送。
+8. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
+9. 自动换 IP 成功后会先发送换 IP 结果，再等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
+10. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。

@@ -30,6 +30,7 @@ from handlers.ip_quality import (
 )
 from handlers.ping import ping_handler
 from handlers.speedtest import speedtest_callback, speedtest_handler
+from handlers.stream_check import stream_check_handler
 from handlers.user_check import check_user_permission
 from services.ip_change_service import perform_ip_change, persist_result_for_notification
 from utils.logger import logger
@@ -52,6 +53,7 @@ BOT_COMMANDS = [
     BotCommand("logs", "查看最近运行日志"),
     BotCommand("health", "检查机器人运行状态"),
     BotCommand("quality", "检测IP质量并发送JPG报告"),
+    BotCommand("stream", "检测流媒体解锁并发送简报"),
     BotCommand("ping", "测试网络延迟"),
     BotCommand("speedtest", "测试网络速度"),
 ]
@@ -127,6 +129,7 @@ class VPSChangeIPBot:
             "/logs - 查看最近运行日志\n"
             "/health - 检查机器人运行状态\n"
             "/quality - 检测IP质量并发送JPG报告\n"
+            "/stream - 检测流媒体解锁并发送简报\n"
             "/ping - 测试网络延迟\n"
             "/speedtest - 测试网络速度"
         )
@@ -474,6 +477,15 @@ class VPSChangeIPBot:
         )) else "CairoSVG"
         checks.append(f"IP质量图片渲染: {quality_tool}")
 
+        stream_tools = []
+        for name in ("bash", "curl"):
+            stream_tools.append(f"{name}:{'可用' if shutil.which(name) else '不可用'}")
+        checks.append(
+            "流媒体检测: "
+            f"{'已启用' if config.get('stream_check_enabled') else '已关闭'} "
+            f"({', '.join(stream_tools)})"
+        )
+
         speedtest_cli = "可用" if shutil.which("speedtest") else "不可用"
         checks.append(f"speedtest CLI: {speedtest_cli}")
 
@@ -508,6 +520,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("logs", self.logs))
         self.app.add_handler(CommandHandler("health", self.health))
         self.app.add_handler(CommandHandler("quality", ip_quality_handler))
+        self.app.add_handler(CommandHandler("stream", stream_check_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
         self.app.add_handler(CallbackQueryHandler(speedtest_callback, pattern="^speedtest_"))

@@ -49,3 +49,9 @@ ping_count: 10
 # IP质量检测配置
 ip_quality_enabled: true
 ip_quality_cmd: "bash <(curl -sL https://IP.Check.Place) -y"
+
+# 流媒体解锁检测配置
+stream_check_enabled: true
+stream_check_cmd: "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
+stream_check_input: "1"
+stream_check_timeout: 1200

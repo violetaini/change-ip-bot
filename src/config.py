@@ -35,6 +35,10 @@ DEFAULT_CONFIG = {
     "ping_count": 10,
     "ip_quality_enabled": True,
     "ip_quality_cmd": "bash <(curl -sL https://IP.Check.Place) -y",
+    "stream_check_enabled": True,
+    "stream_check_cmd": "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)",
+    "stream_check_input": "1",
+    "stream_check_timeout": 1200,
 }
 
 
@@ -81,6 +85,7 @@ def load_config() -> Dict[str, Any]:
     config["auto_change_notify"] = _to_bool(config.get("auto_change_notify"))
     config["huawei_dns_enabled"] = _to_bool(config.get("huawei_dns_enabled"))
     config["ip_quality_enabled"] = _to_bool(config.get("ip_quality_enabled"))
+    config["stream_check_enabled"] = _to_bool(config.get("stream_check_enabled"))
     config["_loaded_from"] = used_path
     return config
 
