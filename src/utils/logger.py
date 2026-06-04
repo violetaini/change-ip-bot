@@ -2,6 +2,8 @@ from loguru import logger
 import sys
 import os
 
+from utils.redact import redact_text
+
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -9,6 +11,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {thread.name} | {name}:{function}:{line} - {message}"
 
 logger.remove()
+logger = logger.patch(lambda record: record.update(message=redact_text(record["message"])))
 logger.add(
     sys.stdout,
     format=fmt,

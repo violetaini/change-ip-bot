@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+import asyncio
+import os
+import shutil
+import socket
+import subprocess
+import tempfile
+from datetime import time as datetime_time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
 from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
@@ -11,23 +21,90 @@ from telegram.ext import (
 from config import config
 from handlers.ip_change import change_ip_handler
 from handlers.ip_check import check_ip_status
-from handlers.ip_quality import ip_quality_handler
+from handlers.ip_quality import (
+    crop_report_area,
+    extract_svg_url,
+    ip_quality_handler,
+    render_svg_url_to_png,
+    run_quality_command,
+)
 from handlers.ping import ping_handler
 from handlers.speedtest import speedtest_callback, speedtest_handler
 from handlers.user_check import check_user_permission
 from services.ip_change_service import perform_ip_change, persist_result_for_notification
 from utils.logger import logger
 from utils.state import get_pending_notification, mark_notification_sent, mark_sending_notify
+from utils.network import get_current_ip
+from utils.redact import redact_text
 
+
+AUTO_CHANGE_JOB_NAME = "auto_change_ip_job"
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 BOT_COMMANDS = [
     BotCommand("start", "显示帮助和可用命令"),
     BotCommand("check", "检查当前IP状态"),
     BotCommand("change", "更换IP并同步华为云DNS"),
+    BotCommand("auto_start", "启用自动换IP"),
+    BotCommand("auto_stop", "关闭自动换IP"),
+    BotCommand("auto_status", "查看自动换IP状态"),
+    BotCommand("set_auto_time", "设置自动换IP时间"),
+    BotCommand("logs", "查看最近运行日志"),
+    BotCommand("health", "检查机器人运行状态"),
     BotCommand("quality", "检测IP质量并发送JPG报告"),
     BotCommand("ping", "测试网络延迟"),
     BotCommand("speedtest", "测试网络速度"),
 ]
+
+
+def persist_config_value(key: str, value) -> None:
+    config_path = config.get("_loaded_from")
+    if not config_path:
+        raise RuntimeError("无法确定当前配置文件路径")
+
+    path = Path(str(config_path))
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if isinstance(value, bool):
+        rendered = "true" if value else "false"
+    else:
+        rendered = str(value)
+
+    prefix = f"{key}:"
+    new_line = f"{key}: {rendered}"
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(prefix) and not stripped.startswith("#"):
+            lines[idx] = new_line
+            break
+    else:
+        lines.append(new_line)
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def parse_auto_change_time() -> datetime_time:
+    raw_time = str(config.get("auto_change_time", "04:00")).strip()
+    try:
+        hour_text, minute_text = raw_time.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+        return datetime_time(hour=hour, minute=minute, tzinfo=BEIJING_TZ)
+    except ValueError as exc:
+        raise ValueError(f"auto_change_time 配置无效，应使用 HH:MM 格式，当前值: {raw_time}") from exc
+
+
+def resolve_ipv4_records(hostname: str) -> list[str]:
+    clean_name = str(hostname or "").strip().rstrip(".")
+    if not clean_name:
+        return []
+    records = socket.getaddrinfo(clean_name, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+    return sorted({item[4][0] for item in records if item and item[4]})
+
+
+def get_log_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "logs" / "bot.log"
 
 
 class VPSChangeIPBot:
@@ -43,6 +120,12 @@ class VPSChangeIPBot:
             "/start - 显示帮助\n"
             "/check - 检查当前IP状态\n"
             "/change - 更换IP并同步华为云DNS\n"
+            "/auto_start - 启用自动换IP\n"
+            "/auto_stop - 关闭自动换IP\n"
+            "/auto_status - 查看自动换IP状态\n"
+            "/set_auto_time HH:MM - 设置自动换IP时间\n"
+            "/logs - 查看最近运行日志\n"
+            "/health - 检查机器人运行状态\n"
             "/quality - 检测IP质量并发送JPG报告\n"
             "/ping - 测试网络延迟\n"
             "/speedtest - 测试网络速度"
@@ -50,7 +133,27 @@ class VPSChangeIPBot:
 
     async def auto_change_job(self, context: ContextTypes.DEFAULT_TYPE):
         logger.info("开始执行自动换IP任务")
-        result = await perform_ip_change(trigger="auto")
+        retry_count = int(config.get("auto_change_retry_count", 5))
+        retry_delay = int(config.get("auto_change_retry_delay_seconds", 60))
+        max_attempts = max(1, retry_count + 1)
+        result = None
+
+        for attempt in range(1, max_attempts + 1):
+            result = await perform_ip_change(trigger="auto")
+            if result.success:
+                if attempt > 1:
+                    result.message = f"{result.message}；自动重试第 {attempt - 1} 次后成功"
+                break
+
+            logger.warning(
+                f"自动换IP第 {attempt}/{max_attempts} 次失败: "
+                f"status={result.status}, message={result.message}"
+            )
+            if attempt < max_attempts:
+                await asyncio.sleep(max(1, retry_delay))
+
+        if result and not result.success and max_attempts > 1:
+            result.message = f"{result.message}；已尝试 {max_attempts} 次，仍未成功"
 
         if not config.get("auto_change_notify", True):
             return
@@ -62,6 +165,10 @@ class VPSChangeIPBot:
         for chat_id in chat_ids:
             await persist_result_for_notification(result, chat_id=chat_id)
         await self.try_send_pending_notifications(context)
+
+        if result and result.success:
+            await self.send_dns_verify_report(context, chat_ids, result.new_ip)
+            await self.send_auto_quality_report(context, chat_ids)
 
     async def try_send_pending_notifications(self, context: ContextTypes.DEFAULT_TYPE):
         pending = get_pending_notification()
@@ -84,12 +191,293 @@ class VPSChangeIPBot:
             mark_sending_notify(False)
             logger.warning(f"补发换IP结果通知失败，稍后重试: {e}")
 
+    async def send_dns_verify_report(self, context: ContextTypes.DEFAULT_TYPE, chat_ids: list[str], target_ip: str):
+        if not config.get("dns_verify_enabled", True):
+            return
+        if not config.get("huawei_dns_enabled"):
+            return
+
+        record_name = str(config.get("huawei_dns_record_name", "")).strip().rstrip(".")
+        if not record_name or not target_ip:
+            return
+
+        delay = int(config.get("dns_verify_delay_seconds", 60))
+        retry_count = int(config.get("dns_verify_retry_count", 10))
+
+        for attempt in range(1, retry_count + 1):
+            await asyncio.sleep(max(1, delay))
+            try:
+                records = await asyncio.to_thread(resolve_ipv4_records, record_name)
+                if target_ip in records:
+                    text = (
+                        "DNS解析已生效\n"
+                        f"域名: {record_name}\n"
+                        f"目标IP: {target_ip}\n"
+                        f"当前解析: {', '.join(records)}\n"
+                        f"检查次数: {attempt}/{retry_count}"
+                    )
+                    for chat_id in chat_ids:
+                        await context.bot.send_message(chat_id=chat_id, text=text)
+                    return
+
+                logger.info(
+                    f"DNS解析暂未生效: {record_name}, target={target_ip}, "
+                    f"records={records}, attempt={attempt}/{retry_count}"
+                )
+            except Exception as e:
+                records = []
+                logger.warning(f"DNS解析检查失败: {e}")
+
+        text = (
+            "DNS解析暂未确认生效\n"
+            f"域名: {record_name}\n"
+            f"目标IP: {target_ip}\n"
+            f"最后解析: {', '.join(records) if records else '未获取到A记录'}\n"
+            f"已检查: {retry_count} 次"
+        )
+        for chat_id in chat_ids:
+            await context.bot.send_message(chat_id=chat_id, text=text)
+
+    async def send_auto_quality_report(self, context: ContextTypes.DEFAULT_TYPE, chat_ids: list[str]):
+        if not config.get("auto_change_quality_report", True):
+            return
+        if not config.get("ip_quality_enabled", True):
+            return
+
+        tmp_dir = None
+        try:
+            quality_cmd = str(config.get("ip_quality_cmd") or "").strip()
+            return_code, output = await asyncio.to_thread(run_quality_command, quality_cmd)
+            logger.info(f"自动IP质量检测命令返回码: {return_code}")
+
+            svg_url = extract_svg_url(output)
+            if not svg_url:
+                text = (
+                    "自动IP质量检测完成，但没有识别到SVG链接。\n"
+                    f"命令返回码: {return_code}\n\n"
+                    f"最近输出:\n{redact_text((output or '无输出')[-1500:])}"
+                )
+                for chat_id in chat_ids:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+                return
+
+            tmp_dir = tempfile.mkdtemp(prefix="auto_ip_quality_")
+            png_path = str(Path(tmp_dir) / "ip_quality_report.png")
+            jpg_path = str(Path(tmp_dir) / "ip_quality_report.jpg")
+            await asyncio.to_thread(render_svg_url_to_png, svg_url, png_path)
+            await asyncio.to_thread(crop_report_area, png_path, jpg_path)
+
+            for chat_id in chat_ids:
+                with open(jpg_path, "rb") as f:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption="自动换IP后的IP质量检测报告",
+                    )
+        except Exception as e:
+            logger.exception(f"自动IP质量检测失败: {e}")
+            for chat_id in chat_ids:
+                await context.bot.send_message(chat_id=chat_id, text=f"自动IP质量检测失败：{redact_text(str(e))}")
+        finally:
+            if tmp_dir and os.path.isdir(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
     async def post_init(self, application: Application):
         try:
             await application.bot.set_my_commands(BOT_COMMANDS)
             logger.info("已注册 Telegram 机器人命令菜单")
         except Exception as e:
             logger.warning(f"注册 Telegram 命令菜单失败: {e}")
+
+    def get_auto_change_jobs(self):
+        if not self.app or not self.app.job_queue:
+            return []
+        return self.app.job_queue.get_jobs_by_name(AUTO_CHANGE_JOB_NAME)
+
+    def schedule_auto_change_job(self) -> bool:
+        if not self.app or not self.app.job_queue:
+            logger.warning("JobQueue 不可用，请确认安装了 python-telegram-bot[job-queue]")
+            return False
+
+        try:
+            run_time = parse_auto_change_time()
+        except ValueError as e:
+            logger.warning(str(e))
+            return False
+
+        if self.get_auto_change_jobs():
+            logger.info("自动换IP任务已存在，跳过重复注册")
+            return True
+
+        self.app.job_queue.run_daily(
+            self.auto_change_job,
+            time=run_time,
+            name=AUTO_CHANGE_JOB_NAME,
+        )
+        logger.info(f"自动换IP任务已注册，每天北京时间 {run_time.strftime('%H:%M')} 执行一次")
+        return True
+
+    def cancel_auto_change_jobs(self) -> int:
+        jobs = self.get_auto_change_jobs()
+        for job in jobs:
+            job.schedule_removal()
+        if jobs:
+            logger.info(f"已移除 {len(jobs)} 个自动换IP任务")
+        return len(jobs)
+
+    async def auto_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        try:
+            config["auto_change_enabled"] = True
+            persist_config_value("auto_change_enabled", True)
+            scheduled = self.schedule_auto_change_job()
+        except Exception as e:
+            logger.exception(f"启用自动换IP失败: {e}")
+            await update.message.reply_text(f"启用自动换IP失败：{redact_text(str(e))}")
+            return
+
+        if scheduled:
+            run_time = parse_auto_change_time()
+            await update.message.reply_text(f"已启用自动换IP，每天北京时间 {run_time.strftime('%H:%M')} 执行一次。")
+        else:
+            await update.message.reply_text("已写入启用配置，但当前 JobQueue 不可用，未注册定时任务。")
+
+    async def auto_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        try:
+            config["auto_change_enabled"] = False
+            persist_config_value("auto_change_enabled", False)
+            removed = self.cancel_auto_change_jobs()
+        except Exception as e:
+            logger.exception(f"关闭自动换IP失败: {e}")
+            await update.message.reply_text(f"关闭自动换IP失败：{redact_text(str(e))}")
+            return
+
+        await update.message.reply_text(f"已关闭自动换IP，已移除 {removed} 个运行中的定时任务。")
+
+    async def auto_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        enabled = bool(config.get("auto_change_enabled"))
+        jobs = self.get_auto_change_jobs()
+        auto_time = str(config.get("auto_change_time", "04:00")).strip()
+        retry_count = int(config.get("auto_change_retry_count", 5))
+        retry_delay = int(config.get("auto_change_retry_delay_seconds", 60))
+        await update.message.reply_text(
+            "自动换IP状态\n"
+            f"配置状态: {'已启用' if enabled else '已关闭'}\n"
+            f"定时任务: {'运行中' if jobs else '未注册'}\n"
+            f"执行时间: 每天北京时间 {auto_time}\n"
+            f"失败重试: 最多 {retry_count} 次，间隔 {retry_delay} 秒"
+        )
+
+    async def set_auto_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("用法: /set_auto_time HH:MM，例如 /set_auto_time 04:00")
+            return
+
+        new_time = context.args[0].strip()
+        old_time = config.get("auto_change_time", "04:00")
+        try:
+            config["auto_change_time"] = new_time
+            parse_auto_change_time()
+            persist_config_value("auto_change_time", f'"{new_time}"')
+
+            if config.get("auto_change_enabled"):
+                self.cancel_auto_change_jobs()
+                scheduled = self.schedule_auto_change_job()
+            else:
+                scheduled = False
+        except Exception as e:
+            config["auto_change_time"] = old_time
+            logger.exception(f"设置自动换IP时间失败: {e}")
+            await update.message.reply_text(f"设置自动换IP时间失败：{redact_text(str(e))}")
+            return
+
+        if scheduled:
+            await update.message.reply_text(f"已设置自动换IP时间为每天北京时间 {new_time}，定时任务已重新注册。")
+        else:
+            await update.message.reply_text(f"已设置自动换IP时间为每天北京时间 {new_time}。当前自动换IP未启用。")
+
+    async def logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        try:
+            limit = int(context.args[0]) if context.args else 50
+        except ValueError:
+            limit = 50
+        limit = max(1, min(limit, 100))
+
+        log_path = get_log_path()
+        if not log_path.exists():
+            await update.message.reply_text(f"日志文件不存在: {log_path}")
+            return
+
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+            text = redact_text("\n".join(lines) or "日志为空")
+            if len(text) > 3500:
+                text = text[-3500:]
+            await update.message.reply_text(f"最近 {limit} 行日志:\n{text}")
+        except Exception as e:
+            logger.exception(f"读取日志失败: {e}")
+            await update.message.reply_text(f"读取日志失败：{redact_text(str(e))}")
+
+    async def health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        checks = []
+
+        try:
+            current_ip = await asyncio.to_thread(get_current_ip)
+            checks.append(f"公网IP: {current_ip}")
+        except Exception as e:
+            checks.append(f"公网IP: 获取失败 ({e})")
+
+        checks.append(f"换IP API: {'已配置' if str(config.get('ip_change_api', '')).strip() else '未配置'}")
+        checks.append(f"自动换IP: {'已启用' if config.get('auto_change_enabled') else '已关闭'}")
+        checks.append(f"自动时间: 每天北京时间 {config.get('auto_change_time', '04:00')}")
+        checks.append(
+            "自动重试: "
+            f"最多 {int(config.get('auto_change_retry_count', 5))} 次，"
+            f"间隔 {int(config.get('auto_change_retry_delay_seconds', 60))} 秒"
+        )
+        checks.append(f"华为DNS: {'已启用' if config.get('huawei_dns_enabled') else '未启用'}")
+
+        record_name = str(config.get("huawei_dns_record_name", "")).strip()
+        if config.get("huawei_dns_enabled") and record_name:
+            try:
+                records = await asyncio.to_thread(resolve_ipv4_records, record_name)
+                checks.append(f"DNS解析: {record_name} -> {', '.join(records) if records else '无A记录'}")
+            except Exception as e:
+                checks.append(f"DNS解析: 检查失败 ({e})")
+
+        state_file = Path(str(config.get("state_file", "/var/lib/vps-ip-bot/state.json"))).expanduser()
+        state_parent = state_file.parent
+        checks.append(f"状态文件目录: {'可写' if os.access(state_parent, os.W_OK) else '不可写'} ({state_parent})")
+
+        quality_tool = "Chromium" if any(shutil.which(name) for name in (
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+            "google-chrome-stable",
+        )) else "CairoSVG"
+        checks.append(f"IP质量图片渲染: {quality_tool}")
+
+        speedtest_cli = "可用" if shutil.which("speedtest") else "不可用"
+        checks.append(f"speedtest CLI: {speedtest_cli}")
+
+        await update.message.reply_text("健康检查\n" + "\n".join(f"- {item}" for item in checks))
 
     def setup_jobs(self):
         if self.app.job_queue:
@@ -104,22 +492,7 @@ class VPSChangeIPBot:
             logger.info("自动换IP未启用")
             return
 
-        minutes = int(config.get("auto_change_interval_minutes", 360))
-        if minutes < 1:
-            logger.warning("auto_change_interval_minutes 配置无效，跳过注册")
-            return
-
-        if not self.app.job_queue:
-            logger.warning("JobQueue 不可用，请确认安装了 python-telegram-bot[job-queue]")
-            return
-
-        self.app.job_queue.run_repeating(
-            self.auto_change_job,
-            interval=minutes * 60,
-            first=30,
-            name="auto_change_ip_job",
-        )
-        logger.info(f"自动换IP任务已注册，每 {minutes} 分钟执行一次")
+        self.schedule_auto_change_job()
 
     def run(self):
         logger.info("机器人初始化中...")
@@ -128,6 +501,12 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("check", check_ip_status))
         self.app.add_handler(CommandHandler("change", change_ip_handler))
+        self.app.add_handler(CommandHandler("auto_start", self.auto_start))
+        self.app.add_handler(CommandHandler("auto_stop", self.auto_stop))
+        self.app.add_handler(CommandHandler("auto_status", self.auto_status))
+        self.app.add_handler(CommandHandler("set_auto_time", self.set_auto_time))
+        self.app.add_handler(CommandHandler("logs", self.logs))
+        self.app.add_handler(CommandHandler("health", self.health))
         self.app.add_handler(CommandHandler("quality", ip_quality_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))

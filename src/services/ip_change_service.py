@@ -13,6 +13,7 @@ from utils.network import (
     parse_change_ip_result,
     verify_public_ip_matches,
 )
+from utils.redact import redact_text
 from utils.state import get_last_change_time, update_change_state
 
 
@@ -202,7 +203,7 @@ async def perform_ip_change(trigger: str = "manual") -> ChangeResult:
         return ChangeResult(
             success=False,
             status="EXCEPTION",
-            message=f"更换IP时出错: {e}",
+            message=f"更换IP时出错: {redact_text(str(e))}",
             old_ip=public_old_ip,
             new_ip="",
             trigger=trigger,

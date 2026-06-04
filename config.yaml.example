@@ -22,8 +22,16 @@ ip_change_retry_verify_count: 3
 
 # 自动换IP配置
 auto_change_enabled: false
-auto_change_interval_minutes: 360
+auto_change_time: "04:00"
+auto_change_retry_count: 5
+auto_change_retry_delay_seconds: 60
 auto_change_notify: true
+auto_change_quality_report: true
+
+# DNS生效校验配置。自动换IP成功并发出完成通知后，再等待并检查域名是否解析到新IP。
+dns_verify_enabled: true
+dns_verify_delay_seconds: 60
+dns_verify_retry_count: 10
 
 # 华为云DNS配置（使用 AK/SK）
 huawei_dns_enabled: false

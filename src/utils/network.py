@@ -9,6 +9,7 @@ import requests
 
 from config import config
 from utils.logger import logger
+from utils.redact import redact_text
 
 IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
@@ -90,6 +91,11 @@ def call_change_ip_api(api_url: str, timeout: int = 600) -> Dict[str, Any]:
         raise ChangeIPTimeoutError(f"换IP接口连接超时（{timeout}秒）") from e
     except requests.exceptions.Timeout as e:
         raise ChangeIPTimeoutError(f"换IP接口超时（{timeout}秒）") from e
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else "未知"
+        raise RuntimeError(f"换IP API HTTP错误: {status_code}") from e
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"换IP API请求失败: {e.__class__.__name__}") from e
 
     try:
         data = response.json()
@@ -99,7 +105,7 @@ def call_change_ip_api(api_url: str, timeout: int = 600) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError(f"换IP API 返回格式异常: {data}")
 
-    logger.info(f"换IP API 响应: {data}")
+    logger.info(f"换IP API 响应: {redact_text(str(data))}")
     return data
 
 

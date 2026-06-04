@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes
 from config import config
 from handlers.user_check import check_user_permission
 from utils.logger import logger
+from utils.redact import redact_text
 
 DEFAULT_QUALITY_CMD = "bash <(curl -sL https://IP.Check.Place) -y"
 SVG_URL_RE = re.compile(r'https?://[^\s"\'<>]+\.svg(?:\?[^\s"\'<>]*)?', re.IGNORECASE)
@@ -86,16 +87,30 @@ def crop_report_area(png_path: str, jpg_path: str) -> None:
         rgb = img.convert("RGB")
         width, height = rgb.size
 
-        corners = [
-            rgb.getpixel((0, 0)),
-            rgb.getpixel((width - 1, 0)),
-            rgb.getpixel((0, height - 1)),
-            rgb.getpixel((width - 1, height - 1)),
-        ]
-        bg = tuple(sum(px[i] for px in corners) // len(corners) for i in range(3))
+        def color_bucket(pixel: tuple[int, int, int]) -> tuple[int, int, int]:
+            return tuple(channel // 16 for channel in pixel)
+
+        border_counts: dict[tuple[int, int, int], int] = {}
+        border_samples: dict[tuple[int, int, int], list[tuple[int, int, int]]] = {}
+        border_step = max(1, min(width, height) // 200)
+
+        for x in range(0, width, border_step):
+            for pixel in (rgb.getpixel((x, 0)), rgb.getpixel((x, height - 1))):
+                bucket = color_bucket(pixel)
+                border_counts[bucket] = border_counts.get(bucket, 0) + 1
+                border_samples.setdefault(bucket, []).append(pixel)
+        for y in range(0, height, border_step):
+            for pixel in (rgb.getpixel((0, y)), rgb.getpixel((width - 1, y))):
+                bucket = color_bucket(pixel)
+                border_counts[bucket] = border_counts.get(bucket, 0) + 1
+                border_samples.setdefault(bucket, []).append(pixel)
+
+        bg_bucket = max(border_counts, key=border_counts.get)
+        bg_pixels = border_samples[bg_bucket]
+        bg = tuple(sum(px[i] for px in bg_pixels) // len(bg_pixels) for i in range(3))
 
         def is_foreground(pixel: tuple[int, int, int]) -> bool:
-            return sum(abs(pixel[i] - bg[i]) for i in range(3)) > 25
+            return sum(abs(pixel[i] - bg[i]) for i in range(3)) > 40
 
         xs = []
         ys = []
@@ -112,8 +127,8 @@ def crop_report_area(png_path: str, jpg_path: str) -> None:
 
         left = max(0, min(xs) - 12)
         top = max(0, min(ys) - 12)
-        right = min(width, max(xs) + 12)
-        bottom = min(height, max(ys) + 12)
+        right = min(width, max(xs) + 13)
+        bottom = min(height, max(ys) + 13)
 
         cropped = rgb.crop((left, top, right, bottom))
         cropped.save(jpg_path, format="JPEG", quality=95)
@@ -147,7 +162,7 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 text="IP 质量检测完成，但没有识别到 SVG 链接。\n"
                      f"命令返回码：{return_code}\n\n"
-                     f"最近输出：\n{preview}"
+                     f"最近输出：\n{redact_text(preview)}"
             )
             return
 
@@ -167,7 +182,7 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("IP 质量检测超时，请稍后再试。")
     except Exception as e:
         logger.exception(f"IP 质量检测失败: {e}")
-        await update.message.reply_text(f"IP 质量检测失败：{e}")
+        await update.message.reply_text(f"IP 质量检测失败：{redact_text(str(e))}")
     finally:
         if tmp_dir and os.path.isdir(tmp_dir):
             try:

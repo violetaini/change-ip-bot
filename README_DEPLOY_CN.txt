@@ -49,6 +49,12 @@ VPS IP Bot 简洁部署说明
    /start
    /check
    /change
+   /auto_start
+   /auto_stop
+   /auto_status
+   /set_auto_time 04:00
+   /logs
+   /health
    /quality
 
 六、注册 systemd 服务
@@ -86,6 +92,9 @@ systemctl status vps-ip-bot --no-pager
 1. /change 支持按 JSON 返回 status/new_ip/old_ip 判断结果。
 2. 接口超时但公网 IP 已变化时，会按成功处理。
 3. /quality 会发送 JPG 图片预览。
-4. 自动换 IP 默认关闭。
+4. 自动换 IP 默认关闭，可用 /auto_start 开启，/auto_stop 关闭，/auto_status 查看状态。
 5. 状态文件默认写入 /var/lib/vps-ip-bot/state.json，可通过 state_file 配置或 VPS_IP_BOT_STATE_FILE 环境变量覆盖。
 6. /quality 默认执行 IP.Check.Place 远程脚本，如不需要可设置 ip_quality_enabled: false，或用 ip_quality_cmd 指定自己的检测命令。
+7. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
+8. 自动换 IP 成功后会先发送换 IP 结果，再等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
+9. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。

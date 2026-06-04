@@ -12,8 +12,10 @@ This project is useful when your server provider, panel, or custom script expose
 - Treat API timeouts as success if the public IP actually changed.
 - Update a Huawei Cloud DNS record when enabled.
 - Send the result back to Telegram, with retry notification support.
-- Run scheduled automatic IP changes if enabled.
+- Run scheduled automatic IP changes at a fixed Beijing time, with retry support.
+- Verify DNS propagation after automatic IP changes.
 - Run simple network tools such as ping, speedtest, and IP quality reports.
+- Redact sensitive tokens and API keys before writing logs or sending logs to Telegram.
 
 ## Important Assumption
 
@@ -51,6 +53,12 @@ The bot also supports:
 /start      Show help
 /check      Check current IP status
 /change     Change IP and optionally update Huawei Cloud DNS
+/auto_start Enable scheduled automatic IP changes
+/auto_stop  Disable scheduled automatic IP changes
+/auto_status Show automatic IP change status
+/set_auto_time HH:MM Set the daily automatic IP change time, Beijing time
+/logs [N]   Show recent bot logs, redacted
+/health     Run a bot health check
 /quality    Run IP quality check and send an image report
 /ping       Test network latency
 /speedtest  Run network speed test
@@ -101,7 +109,13 @@ Optional but commonly used:
 ```yaml
 telegram_allowed_user_ids: ""
 auto_change_enabled: false
-auto_change_interval_minutes: 360
+auto_change_time: "04:00"
+auto_change_retry_count: 5
+auto_change_retry_delay_seconds: 60
+auto_change_quality_report: true
+dns_verify_enabled: true
+dns_verify_delay_seconds: 60
+dns_verify_retry_count: 10
 huawei_dns_enabled: false
 huawei_ak: ""
 huawei_sk: ""
@@ -167,6 +181,8 @@ journalctl -u vps-ip-bot -f
 - You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
+- Automatic IP changes send the change result first, then verify DNS propagation, then send the IP quality image report.
+- Logs are redacted before writing and before being sent through `/logs`, but do not commit `config.yaml` or any backup containing secrets.
 
 ## License
 
