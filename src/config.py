@@ -26,6 +26,22 @@ DEFAULT_CONFIG = {
     "dns_verify_enabled": True,
     "dns_verify_delay_seconds": 60,
     "dns_verify_retry_count": 10,
+    "dns_update_enabled": False,
+    "dns_provider": "",
+    "dns_zone_name": "",
+    "dns_record_name": "",
+    "dns_record_type": "A",
+    "dns_ttl": 60,
+    "cloudflare_api_token": "",
+    "cloudflare_proxied": False,
+    "aliyun_access_key_id": "",
+    "aliyun_access_key_secret": "",
+    "dnspod_login_token": "",
+    "godaddy_api_key": "",
+    "godaddy_api_secret": "",
+    "porkbun_api_key": "",
+    "porkbun_secret_api_key": "",
+    "digitalocean_token": "",
     "huawei_dns_enabled": False,
     "huawei_ak": "",
     "huawei_sk": "",
@@ -85,6 +101,8 @@ def load_config() -> Dict[str, Any]:
     config["ip_change_verify_public_ip"] = _to_bool(config.get("ip_change_verify_public_ip"))
     config["auto_change_enabled"] = _to_bool(config.get("auto_change_enabled"))
     config["auto_change_notify"] = _to_bool(config.get("auto_change_notify"))
+    config["dns_update_enabled"] = _to_bool(config.get("dns_update_enabled"))
+    config["cloudflare_proxied"] = _to_bool(config.get("cloudflare_proxied"))
     config["huawei_dns_enabled"] = _to_bool(config.get("huawei_dns_enabled"))
     config["ip_quality_enabled"] = _to_bool(config.get("ip_quality_enabled"))
     config["stream_check_enabled"] = _to_bool(config.get("stream_check_enabled"))

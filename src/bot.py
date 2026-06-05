@@ -34,6 +34,7 @@ from handlers.speedtest import speedtest_callback, speedtest_handler
 from handlers.stream_check import stream_check_handler
 from handlers.user_check import check_super_admin_permission, check_user_permission
 from services.ip_change_service import perform_ip_change, persist_result_for_notification
+from services.dns_update_service import get_dns_provider_name, get_dns_record_name, is_dns_update_enabled
 from utils.logger import logger
 from utils.state import get_pending_notification, mark_notification_sent, mark_sending_notify
 from utils.network import get_current_ip
@@ -223,10 +224,10 @@ class VPSChangeIPBot:
     async def send_dns_verify_report(self, context: ContextTypes.DEFAULT_TYPE, chat_ids: list[str], target_ip: str):
         if not config.get("dns_verify_enabled", True):
             return
-        if not config.get("huawei_dns_enabled"):
+        if not is_dns_update_enabled():
             return
 
-        record_name = str(config.get("huawei_dns_record_name", "")).strip().rstrip(".")
+        record_name = get_dns_record_name().strip().rstrip(".")
         if not record_name or not target_ip:
             return
 
@@ -518,10 +519,11 @@ class VPSChangeIPBot:
             f"最多 {int(config.get('auto_change_retry_count', 5))} 次，"
             f"间隔 {int(config.get('auto_change_retry_delay_seconds', 60))} 秒"
         )
-        checks.append(f"华为DNS: {'已启用' if config.get('huawei_dns_enabled') else '未启用'}")
+        dns_provider = get_dns_provider_name() or "未配置"
+        checks.append(f"DNS更新: {'已启用' if is_dns_update_enabled() else '未启用'} ({dns_provider})")
 
-        record_name = str(config.get("huawei_dns_record_name", "")).strip()
-        if config.get("huawei_dns_enabled") and record_name:
+        record_name = get_dns_record_name().strip()
+        if is_dns_update_enabled() and record_name:
             try:
                 records = await asyncio.to_thread(resolve_ipv4_records, record_name)
                 checks.append(f"DNS解析: {record_name} -> {', '.join(records) if records else '无A记录'}")

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from config import config
-from services.huawei_dns import update_huawei_dns_if_enabled
+from services.dns_update_service import update_dns_if_enabled
 from utils.logger import logger
 from utils.network import (
     ChangeIPTimeoutError,
@@ -91,9 +91,9 @@ async def _verify_changed_ip(target_ip: str) -> bool:
 
 def _update_dns_safely(new_ip: str) -> str:
     try:
-        return update_huawei_dns_if_enabled(new_ip)
+        return update_dns_if_enabled(new_ip)
     except Exception as dns_error:
-        dns_message = f"华为云DNS更新失败: {dns_error}"
+        dns_message = f"DNS更新失败: {dns_error}"
         logger.error(dns_message)
         return dns_message
 

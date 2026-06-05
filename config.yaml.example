@@ -36,7 +36,38 @@ dns_verify_enabled: true
 dns_verify_delay_seconds: 60
 dns_verify_retry_count: 10
 
-# 华为云DNS配置（使用 AK/SK）
+# 统一DNS更新配置。
+# 支持 dns_provider: cloudflare, aliyun, dnspod, tencent_dnspod, godaddy, porkbun, digitalocean, huawei
+dns_update_enabled: false
+dns_provider: ""
+dns_zone_name: ""
+dns_record_name: ""
+dns_record_type: "A"
+dns_ttl: 60
+
+# Cloudflare
+cloudflare_api_token: ""
+cloudflare_proxied: false
+
+# 阿里云DNS
+aliyun_access_key_id: ""
+aliyun_access_key_secret: ""
+
+# DNSPod / 腾讯云DNSPod。格式通常为 "ID,Token"
+dnspod_login_token: ""
+
+# GoDaddy
+godaddy_api_key: ""
+godaddy_api_secret: ""
+
+# Porkbun
+porkbun_api_key: ""
+porkbun_secret_api_key: ""
+
+# DigitalOcean
+digitalocean_token: ""
+
+# 华为云DNS配置（使用 AK/SK）。旧配置仍兼容；也可设置 dns_provider: "huawei"。
 huawei_dns_enabled: false
 huawei_ak: ""
 huawei_sk: ""

@@ -24,7 +24,16 @@ VPS IP Bot 简洁部署说明
    ip_change_api
    如果机器人在群里使用，telegram_chat_id 可填群 chat_id；
    如需限制具体操作者，再填写 telegram_super_admin_user_ids 和 telegram_admin_user_ids（多个用英文逗号分隔）。
-3. 如果要自动更新华为云 DNS，再填写：
+3. 如果要自动更新 DNS，可使用统一 DNS 配置：
+   dns_update_enabled: true
+   dns_provider: cloudflare
+   dns_zone_name
+   dns_record_name
+   dns_record_type: A
+   dns_ttl: 60
+   然后按服务商填写对应密钥。
+   当前支持：huawei、cloudflare、aliyun、dnspod、tencent_dnspod、godaddy、porkbun、digitalocean。
+   旧的华为云配置仍兼容：
    huawei_dns_enabled: true
    huawei_ak
    huawei_sk
@@ -101,5 +110,5 @@ systemctl status vps-ip-bot --no-pager
 8. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
 9. 普通管理员可执行 /change 和只读检测命令；/auto_start、/auto_stop、/set_auto_time、/logs、/add_admin 仅超级管理员可用。
 10. /add_admin USER_ID 可由超级管理员添加普通管理员，并写回 config.yaml。
-11. 自动换 IP 成功后会先发送换 IP 结果，再等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
+11. 自动换 IP 成功后会先更新配置的 DNS 服务商，再发送换 IP 结果、等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
 12. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。

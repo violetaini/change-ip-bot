@@ -121,6 +121,12 @@ auto_change_quality_report: true
 dns_verify_enabled: true
 dns_verify_delay_seconds: 60
 dns_verify_retry_count: 10
+dns_update_enabled: false
+dns_provider: ""
+dns_zone_name: ""
+dns_record_name: ""
+dns_record_type: "A"
+dns_ttl: 60
 huawei_dns_enabled: false
 huawei_ak: ""
 huawei_sk: ""
@@ -139,6 +145,21 @@ Regular admins can run `/change` and read-only check commands.
 If `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are both empty, the bot keeps the old behavior and authorizes by `telegram_allowed_user_ids` or `telegram_chat_id`.
 
 Do not commit `config.yaml`. It may contain secrets.
+
+Supported DNS providers:
+
+```text
+huawei
+cloudflare
+aliyun
+dnspod
+tencent_dnspod
+godaddy
+porkbun
+digitalocean
+```
+
+Legacy Huawei Cloud settings remain supported. For new providers, set `dns_update_enabled: true`, `dns_provider`, `dns_zone_name`, `dns_record_name`, and the provider credentials.
 
 ## Run Manually
 
@@ -194,7 +215,7 @@ journalctl -u vps-ip-bot -f
 - `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
 - `/add_admin USER_ID` can only be used by a super admin and writes the new regular admin to `config.yaml`.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
-- Automatic IP changes send the change result first, then verify DNS propagation, then send the IP quality image report.
+- Automatic IP changes update DNS through the configured provider, send the change result, verify DNS propagation, then send the IP quality image report.
 - Logs are redacted before writing and before being sent through `/logs`, but do not commit `config.yaml` or any backup containing secrets.
 
 ## License

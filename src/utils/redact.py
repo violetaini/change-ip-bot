@@ -14,7 +14,21 @@ def redact_text(text: str) -> str:
     try:
         from config import config
 
-        for key in ("telegram_bot_token", "ip_change_api", "huawei_ak", "huawei_sk"):
+        for key in (
+            "telegram_bot_token",
+            "ip_change_api",
+            "huawei_ak",
+            "huawei_sk",
+            "cloudflare_api_token",
+            "aliyun_access_key_id",
+            "aliyun_access_key_secret",
+            "dnspod_login_token",
+            "godaddy_api_key",
+            "godaddy_api_secret",
+            "porkbun_api_key",
+            "porkbun_secret_api_key",
+            "digitalocean_token",
+        ):
             value = str(config.get(key, "") or "").strip()
             if len(value) >= 6:
                 redacted = redacted.replace(value, f"<redacted:{key}>")
