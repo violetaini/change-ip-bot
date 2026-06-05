@@ -50,6 +50,7 @@ from utils.redact import redact_text
 
 AUTO_CHANGE_JOB_NAME = "auto_change_ip_job"
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+INVISIBLE_MESSAGE_TEXT = "\u2063"
 
 BOT_COMMANDS = [
     BotCommand("start", "显示帮助和可用命令"),
@@ -492,47 +493,63 @@ class VPSChangeIPBot:
         await update.message.reply_text(f"已添加普通管理员: {new_admin_id}")
 
     def user_management_text(self) -> str:
+        return INVISIBLE_MESSAGE_TEXT
+
+    def user_management_keyboard(self, notice: str = "") -> InlineKeyboardMarkup:
         super_admin_ids = [
             x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
         ]
         admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
-        selected_admin_id = ""
-        if hasattr(self, "_user_management_selected_admin_id"):
-            selected_admin_id = str(getattr(self, "_user_management_selected_admin_id") or "").strip()
-        super_text = "\n".join(f"- {user_id}" for user_id in super_admin_ids) or "- 未配置"
-        if admin_ids:
-            admin_text = "\n".join(
-                f"- {user_id}{' [已选中]' if user_id == selected_admin_id else ''}"
-                for user_id in admin_ids
-            )
-        else:
-            admin_text = "- 暂无"
-        return (
-            "用户管理\n"
-            "超级管理员:\n"
-            f"{super_text}\n\n"
-            "普通管理员:\n"
-            f"{admin_text}"
-        )
-
-    def user_management_keyboard(self) -> InlineKeyboardMarkup:
-        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
         selected_admin_id = str(getattr(self, "_user_management_selected_admin_id", "") or "").strip()
-        rows = [
+
+        rows = [[InlineKeyboardButton("用户管理", callback_data="manage_users:noop")]]
+        if notice:
+            rows.append([InlineKeyboardButton(notice, callback_data="manage_users:noop")])
+
+        rows.append([InlineKeyboardButton("超级管理员", callback_data="manage_users:noop")])
+        if super_admin_ids:
+            rows.extend([
+                [
+                    InlineKeyboardButton(admin_id, callback_data="manage_users:noop")
+                    for admin_id in super_admin_ids[idx:idx + 2]
+                ]
+                for idx in range(0, len(super_admin_ids), 2)
+            ])
+        else:
+            rows.append([InlineKeyboardButton("未配置", callback_data="manage_users:noop")])
+
+        rows.append([InlineKeyboardButton("普通管理员", callback_data="manage_users:noop")])
+        if admin_ids:
+            rows.extend([
+                [
+                    InlineKeyboardButton(
+                        f"{'✅ ' if admin_id == selected_admin_id else ''}{admin_id}",
+                        callback_data=f"manage_users:select:{admin_id}",
+                    )
+                    for admin_id in admin_ids[idx:idx + 2]
+                ]
+                for idx in range(0, len(admin_ids), 2)
+            ])
+        else:
+            rows.append([InlineKeyboardButton("暂无普通管理员", callback_data="manage_users:noop")])
+
+        rows.extend([
             [
-                InlineKeyboardButton(
-                    f"{'✅ ' if admin_id == selected_admin_id else ''}{admin_id}",
-                    callback_data=f"manage_users:select:{admin_id}",
-                )
-                for admin_id in admin_ids[idx:idx + 2]
-            ]
-            for idx in range(0, len(admin_ids), 2)
-        ]
-        rows.append([
-            InlineKeyboardButton("添加普通管理员", callback_data="manage_users:add"),
-            InlineKeyboardButton("删除选中", callback_data="manage_users:delete_selected"),
+                InlineKeyboardButton("添加普通管理员", callback_data="manage_users:add"),
+                InlineKeyboardButton("删除选中", callback_data="manage_users:delete_selected"),
+            ],
+            [InlineKeyboardButton("刷新列表", callback_data="manage_users:menu")],
         ])
-        rows.append([InlineKeyboardButton("返回", callback_data="manage_users:menu")])
+        return InlineKeyboardMarkup(rows)
+
+    def add_admin_prompt_keyboard(self, notice: str = "") -> InlineKeyboardMarkup:
+        rows = [[InlineKeyboardButton("添加普通管理员", callback_data="manage_users:noop")]]
+        if notice:
+            rows.append([InlineKeyboardButton(notice, callback_data="manage_users:noop")])
+        rows.extend([
+            [InlineKeyboardButton("请发送 Telegram USER_ID", callback_data="manage_users:noop")],
+            [InlineKeyboardButton("返回用户管理", callback_data="manage_users:menu")],
+        ])
         return InlineKeyboardMarkup(rows)
 
     async def manage_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -555,6 +572,9 @@ class VPSChangeIPBot:
         await query.answer()
         data = query.data or ""
 
+        if data == "manage_users:noop":
+            return
+
         if data == "manage_users:menu":
             context.user_data.pop("awaiting_add_admin", None)
             self._user_management_selected_admin_id = str(context.user_data.get("selected_admin_id") or "").strip()
@@ -567,12 +587,8 @@ class VPSChangeIPBot:
         if data == "manage_users:add":
             context.user_data["awaiting_add_admin"] = True
             await query.edit_message_text(
-                "请发送要添加的 Telegram USER_ID。\n"
-                "只接受 5-20 位数字。\n\n"
-                "发送 /manage_users 可取消并返回用户管理。",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("返回", callback_data="manage_users:menu")]
-                ]),
+                INVISIBLE_MESSAGE_TEXT,
+                reply_markup=self.add_admin_prompt_keyboard("只接受 5-20 位数字"),
             )
             return
 
@@ -596,8 +612,8 @@ class VPSChangeIPBot:
             admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
             if not admin_id:
                 await query.edit_message_text(
-                    "请先点选一个普通管理员，再点删除选中。",
-                    reply_markup=self.user_management_keyboard(),
+                    INVISIBLE_MESSAGE_TEXT,
+                    reply_markup=self.user_management_keyboard("请先选择普通管理员"),
                 )
                 return
             if admin_id in admin_ids:
@@ -613,7 +629,10 @@ class VPSChangeIPBot:
 
             context.user_data.pop("selected_admin_id", None)
             self._user_management_selected_admin_id = ""
-            await query.edit_message_text(self.user_management_text(), reply_markup=self.user_management_keyboard())
+            await query.edit_message_text(
+                self.user_management_text(),
+                reply_markup=self.user_management_keyboard("已删除普通管理员"),
+            )
             return
 
     async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -668,7 +687,10 @@ class VPSChangeIPBot:
 
         new_admin_id = (update.message.text or "").strip()
         if not re.fullmatch(r"\d{5,20}", new_admin_id):
-            await update.message.reply_text("USER_ID 格式无效，请发送 5-20 位数字，或发送 /manage_users 返回。")
+            await update.message.reply_text(
+                INVISIBLE_MESSAGE_TEXT,
+                reply_markup=self.add_admin_prompt_keyboard("USER_ID 格式无效"),
+            )
             return
 
         super_admin_ids = [
@@ -681,8 +703,8 @@ class VPSChangeIPBot:
         self._user_management_selected_admin_id = ""
         if new_admin_id in super_admin_ids:
             await update.message.reply_text(
-                "该用户已经是超级管理员。\n\n" + self.user_management_text(),
-                reply_markup=self.user_management_keyboard(),
+                self.user_management_text(),
+                reply_markup=self.user_management_keyboard("该用户已经是超级管理员"),
             )
             return
         if new_admin_id not in admin_ids:
@@ -697,8 +719,8 @@ class VPSChangeIPBot:
                 return
 
         await update.message.reply_text(
-            f"已添加普通管理员: {new_admin_id}\n\n{self.user_management_text()}",
-            reply_markup=self.user_management_keyboard(),
+            self.user_management_text(),
+            reply_markup=self.user_management_keyboard("已添加普通管理员"),
         )
 
     async def logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
