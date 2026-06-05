@@ -165,13 +165,36 @@ class VPSChangeIPBot:
         if not chat_ids:
             return
 
-        for chat_id in chat_ids:
-            await persist_result_for_notification(result, chat_id=chat_id)
-        await self.try_send_pending_notifications(context)
+        await self.send_change_result_notifications(context, result, chat_ids)
 
         if result and result.success:
             await self.send_dns_verify_report(context, chat_ids, result.new_ip)
             await self.send_auto_quality_report(context, chat_ids)
+
+    async def send_change_result_notifications(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        result,
+        chat_ids: list[str],
+    ):
+        if not result or not chat_ids:
+            return
+
+        text = await persist_result_for_notification(result, chat_id=chat_ids[0])
+        failed_chat_ids = []
+
+        for chat_id in chat_ids:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+                logger.info(f"已发送自动换IP结果通知: chat_id={chat_id}")
+            except Exception as e:
+                failed_chat_ids.append(chat_id)
+                logger.warning(f"发送自动换IP结果通知失败，将等待恢复后补发: chat_id={chat_id}, error={e}")
+
+        if failed_chat_ids:
+            await persist_result_for_notification(result, chat_id=failed_chat_ids[0])
+        else:
+            mark_notification_sent()
 
     async def try_send_pending_notifications(self, context: ContextTypes.DEFAULT_TYPE):
         pending = get_pending_notification()
