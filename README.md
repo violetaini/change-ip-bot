@@ -57,8 +57,7 @@ The bot also supports:
 /auto_stop  Disable scheduled automatic IP changes
 /auto_status Show automatic IP change status
 /set_auto_time HH:MM Set the daily automatic IP change time, Beijing time
-/add_admin USER_ID Add a regular admin, super admin only
-/remove_admin Remove a regular admin with Telegram buttons, super admin only
+/manage_users Manage regular admins with buttons, super admin only
 /logs [N]   Show recent bot logs, redacted
 /health     Run a bot health check
 /dns_status Show DNS update configuration, super admin only
@@ -145,7 +144,7 @@ stream_check_timeout: 1200
 
 `telegram_chat_id` can contain one or more chat IDs separated by commas.
 
-Super admins can run sensitive commands such as `/auto_start`, `/auto_stop`, `/set_auto_time`, `/logs`, `/add_admin`, and `/remove_admin`.
+Super admins can run sensitive commands such as `/auto_start`, `/auto_stop`, `/set_auto_time`, `/logs`, and `/manage_users`.
 Regular admins can run `/change` and read-only check commands.
 
 If `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are both empty, the bot keeps the old behavior and authorizes by `telegram_allowed_user_ids` or `telegram_chat_id`.
@@ -219,7 +218,7 @@ journalctl -u vps-ip-bot -f
 - You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
 - `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
-- `/add_admin USER_ID` and `/remove_admin` can only be used by a super admin and write regular admin changes to `config.yaml`.
+- `/manage_users` can only be used by a super admin and provides button-based regular admin management. Adding an admin uses the button flow and then asks for the Telegram user ID.
 - `/set_dns_provider`, `/set_dns_record`, `/dns_update_on`, and `/dns_update_off` can only be used by a super admin and write non-secret DNS settings to `config.yaml`.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
 - Automatic IP changes update DNS through the configured provider, send the change result, verify DNS propagation, then send the IP quality image report.

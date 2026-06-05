@@ -17,6 +17,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from config import config
@@ -57,8 +59,7 @@ BOT_COMMANDS = [
     BotCommand("auto_stop", "关闭自动换IP"),
     BotCommand("auto_status", "查看自动换IP状态"),
     BotCommand("set_auto_time", "设置自动换IP时间"),
-    BotCommand("add_admin", "添加普通管理员"),
-    BotCommand("remove_admin", "删除普通管理员"),
+    BotCommand("manage_users", "管理管理员用户"),
     BotCommand("logs", "查看最近运行日志"),
     BotCommand("health", "检查机器人运行状态"),
     BotCommand("dns_status", "查看DNS更新配置"),
@@ -140,8 +141,7 @@ class VPSChangeIPBot:
             "/auto_stop - 关闭自动换IP\n"
             "/auto_status - 查看自动换IP状态\n"
             "/set_auto_time HH:MM - 设置自动换IP时间\n"
-            "/add_admin USER_ID - 添加普通管理员（超级管理员）\n"
-            "/remove_admin - 删除普通管理员（超级管理员）\n"
+            "/manage_users - 管理管理员用户（超级管理员）\n"
             "/logs - 查看最近运行日志\n"
             "/health - 检查机器人运行状态\n"
             "/dns_status - 查看DNS更新配置（超级管理员）\n"
@@ -491,6 +491,114 @@ class VPSChangeIPBot:
 
         await update.message.reply_text(f"已添加普通管理员: {new_admin_id}")
 
+    def user_management_text(self) -> str:
+        super_admin_ids = [
+            x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
+        ]
+        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        super_text = "\n".join(f"- {user_id}" for user_id in super_admin_ids) or "- 未配置"
+        admin_text = "\n".join(f"- {user_id}" for user_id in admin_ids) or "- 暂无"
+        return (
+            "用户管理\n"
+            "超级管理员:\n"
+            f"{super_text}\n\n"
+            "普通管理员:\n"
+            f"{admin_text}"
+        )
+
+    def user_management_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("添加普通管理员", callback_data="manage_users:add"),
+                InlineKeyboardButton("删除普通管理员", callback_data="manage_users:delete_menu"),
+            ],
+            [InlineKeyboardButton("刷新列表", callback_data="manage_users:menu")],
+        ])
+
+    def delete_admin_keyboard(self) -> InlineKeyboardMarkup:
+        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        rows = [
+            [InlineKeyboardButton(f"删除 {admin_id}", callback_data=f"manage_users:delete:{admin_id}")]
+            for admin_id in admin_ids
+        ]
+        rows.append([InlineKeyboardButton("返回", callback_data="manage_users:menu")])
+        return InlineKeyboardMarkup(rows)
+
+    async def manage_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        context.user_data.pop("awaiting_add_admin", None)
+        await update.message.reply_text(
+            self.user_management_text(),
+            reply_markup=self.user_management_keyboard(),
+        )
+
+    async def manage_users_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+        data = query.data or ""
+
+        if data == "manage_users:menu":
+            context.user_data.pop("awaiting_add_admin", None)
+            await query.edit_message_text(
+                self.user_management_text(),
+                reply_markup=self.user_management_keyboard(),
+            )
+            return
+
+        if data == "manage_users:add":
+            context.user_data["awaiting_add_admin"] = True
+            await query.edit_message_text(
+                "请发送要添加的 Telegram USER_ID。\n"
+                "只接受 5-20 位数字。\n\n"
+                "发送 /manage_users 可取消并返回用户管理。",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("返回", callback_data="manage_users:menu")]
+                ]),
+            )
+            return
+
+        if data == "manage_users:delete_menu":
+            admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+            if not admin_ids:
+                await query.edit_message_text(
+                    "当前没有普通管理员。",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("返回", callback_data="manage_users:menu")]
+                    ]),
+                )
+                return
+
+            await query.edit_message_text(
+                "请选择要删除的普通管理员：",
+                reply_markup=self.delete_admin_keyboard(),
+            )
+            return
+
+        if data.startswith("manage_users:delete:"):
+            admin_id = data.split(":", 2)[2].strip()
+            admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+            if admin_id in admin_ids:
+                admin_ids = [x for x in admin_ids if x != admin_id]
+                rendered_admins = ",".join(admin_ids)
+                try:
+                    config["telegram_admin_user_ids"] = rendered_admins
+                    persist_config_value("telegram_admin_user_ids", rendered_admins)
+                except Exception as e:
+                    logger.exception(f"删除普通管理员失败: {e}")
+                    await query.edit_message_text(f"删除普通管理员失败：{redact_text(str(e))}")
+                    return
+
+            await query.edit_message_text(
+                f"已删除普通管理员: {admin_id}\n\n{self.user_management_text()}",
+                reply_markup=self.user_management_keyboard(),
+            )
+            return
+
     async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
             return
@@ -533,6 +641,46 @@ class VPSChangeIPBot:
             return
 
         await query.edit_message_text(f"已删除普通管理员: {admin_id}")
+
+    async def manage_users_add_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.user_data.get("awaiting_add_admin"):
+            return
+        if not await check_super_admin_permission(update):
+            context.user_data.pop("awaiting_add_admin", None)
+            return
+
+        new_admin_id = (update.message.text or "").strip()
+        if not re.fullmatch(r"\d{5,20}", new_admin_id):
+            await update.message.reply_text("USER_ID 格式无效，请发送 5-20 位数字，或发送 /manage_users 返回。")
+            return
+
+        super_admin_ids = [
+            x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
+        ]
+        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+
+        context.user_data.pop("awaiting_add_admin", None)
+        if new_admin_id in super_admin_ids:
+            await update.message.reply_text(
+                "该用户已经是超级管理员。\n\n" + self.user_management_text(),
+                reply_markup=self.user_management_keyboard(),
+            )
+            return
+        if new_admin_id not in admin_ids:
+            admin_ids.append(new_admin_id)
+            rendered_admins = ",".join(admin_ids)
+            try:
+                config["telegram_admin_user_ids"] = rendered_admins
+                persist_config_value("telegram_admin_user_ids", rendered_admins)
+            except Exception as e:
+                logger.exception(f"添加普通管理员失败: {e}")
+                await update.message.reply_text(f"添加普通管理员失败：{redact_text(str(e))}")
+                return
+
+        await update.message.reply_text(
+            f"已添加普通管理员: {new_admin_id}\n\n{self.user_management_text()}",
+            reply_markup=self.user_management_keyboard(),
+        )
 
     async def logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -796,6 +944,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("auto_stop", self.auto_stop))
         self.app.add_handler(CommandHandler("auto_status", self.auto_status))
         self.app.add_handler(CommandHandler("set_auto_time", self.set_auto_time))
+        self.app.add_handler(CommandHandler("manage_users", self.manage_users))
         self.app.add_handler(CommandHandler("add_admin", self.add_admin))
         self.app.add_handler(CommandHandler("remove_admin", self.remove_admin))
         self.app.add_handler(CommandHandler("logs", self.logs))
@@ -809,8 +958,10 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("stream", stream_check_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
+        self.app.add_handler(CallbackQueryHandler(self.manage_users_callback, pattern="^manage_users:"))
         self.app.add_handler(CallbackQueryHandler(self.remove_admin_callback, pattern="^remove_admin:"))
         self.app.add_handler(CallbackQueryHandler(speedtest_callback, pattern="^speedtest_"))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.manage_users_add_text))
 
         self.setup_jobs()
 

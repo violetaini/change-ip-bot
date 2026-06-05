@@ -62,8 +62,7 @@ VPS IP Bot 简洁部署说明
    /auto_stop
    /auto_status
    /set_auto_time 04:00
-   /add_admin 123456789
-   /remove_admin
+   /manage_users
    /logs
    /health
    /dns_status
@@ -114,8 +113,8 @@ systemctl status vps-ip-bot --no-pager
 6. /quality 默认执行 IP.Check.Place 远程脚本，如不需要可设置 ip_quality_enabled: false，或用 ip_quality_cmd 指定自己的检测命令。
 7. /stream 默认执行 1-stream/RegionRestrictionCheck 脚本，自动输入 1，并把结果整理成简报发送。
 8. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
-9. 普通管理员可执行 /change 和只读检测命令；/auto_start、/auto_stop、/set_auto_time、/logs、/add_admin、/remove_admin 仅超级管理员可用。
-10. /add_admin USER_ID 可由超级管理员添加普通管理员；/remove_admin 会通过 Telegram 按钮选择并删除普通管理员，都会写回 config.yaml。
+9. 普通管理员可执行 /change 和只读检测命令；/auto_start、/auto_stop、/set_auto_time、/logs、/manage_users 仅超级管理员可用。
+10. /manage_users 可由超级管理员查看普通管理员列表，并通过按钮添加或删除普通管理员，都会写回 config.yaml。
 11. /set_dns_provider、/set_dns_record、/dns_update_on、/dns_update_off 仅超级管理员可用，会写回非密钥 DNS 配置。
 12. DNS 服务商的 API 密钥仍建议在 config.yaml 中手动填写，不建议通过 Telegram 聊天发送。
 13. 自动换 IP 成功后会先更新配置的 DNS 服务商，再发送换 IP 结果、等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
