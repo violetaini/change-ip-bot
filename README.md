@@ -218,7 +218,7 @@ journalctl -u vps-ip-bot -f
 - You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
 - `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
-- `/manage_users` can only be used by a super admin and provides button-based regular admin management. Adding an admin uses the button flow and then asks for the Telegram user ID.
+- `/manage_users` can only be used by a super admin and provides button-based regular admin management. Admins are shown as buttons; tap one to select it, then tap delete. Adding an admin uses the button flow and then asks for the Telegram user ID.
 - `/set_dns_provider`, `/set_dns_record`, `/dns_update_on`, and `/dns_update_off` can only be used by a super admin and write non-secret DNS settings to `config.yaml`.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
 - Automatic IP changes update DNS through the configured provider, send the change result, verify DNS propagation, then send the IP quality image report.

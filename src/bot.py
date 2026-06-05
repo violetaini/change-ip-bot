@@ -496,8 +496,17 @@ class VPSChangeIPBot:
             x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
         ]
         admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        selected_admin_id = ""
+        if hasattr(self, "_user_management_selected_admin_id"):
+            selected_admin_id = str(getattr(self, "_user_management_selected_admin_id") or "").strip()
         super_text = "\n".join(f"- {user_id}" for user_id in super_admin_ids) or "- 未配置"
-        admin_text = "\n".join(f"- {user_id}" for user_id in admin_ids) or "- 暂无"
+        if admin_ids:
+            admin_text = "\n".join(
+                f"- {user_id}{' [已选中]' if user_id == selected_admin_id else ''}"
+                for user_id in admin_ids
+            )
+        else:
+            admin_text = "- 暂无"
         return (
             "用户管理\n"
             "超级管理员:\n"
@@ -507,20 +516,22 @@ class VPSChangeIPBot:
         )
 
     def user_management_keyboard(self) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("添加普通管理员", callback_data="manage_users:add"),
-                InlineKeyboardButton("删除普通管理员", callback_data="manage_users:delete_menu"),
-            ],
-            [InlineKeyboardButton("刷新列表", callback_data="manage_users:menu")],
-        ])
-
-    def delete_admin_keyboard(self) -> InlineKeyboardMarkup:
         admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        selected_admin_id = str(getattr(self, "_user_management_selected_admin_id", "") or "").strip()
         rows = [
-            [InlineKeyboardButton(f"删除 {admin_id}", callback_data=f"manage_users:delete:{admin_id}")]
-            for admin_id in admin_ids
+            [
+                InlineKeyboardButton(
+                    f"{'✅ ' if admin_id == selected_admin_id else ''}{admin_id}",
+                    callback_data=f"manage_users:select:{admin_id}",
+                )
+                for admin_id in admin_ids[idx:idx + 2]
+            ]
+            for idx in range(0, len(admin_ids), 2)
         ]
+        rows.append([
+            InlineKeyboardButton("添加普通管理员", callback_data="manage_users:add"),
+            InlineKeyboardButton("删除选中", callback_data="manage_users:delete_selected"),
+        ])
         rows.append([InlineKeyboardButton("返回", callback_data="manage_users:menu")])
         return InlineKeyboardMarkup(rows)
 
@@ -529,6 +540,8 @@ class VPSChangeIPBot:
             return
 
         context.user_data.pop("awaiting_add_admin", None)
+        context.user_data.pop("selected_admin_id", None)
+        self._user_management_selected_admin_id = ""
         await update.message.reply_text(
             self.user_management_text(),
             reply_markup=self.user_management_keyboard(),
@@ -544,6 +557,7 @@ class VPSChangeIPBot:
 
         if data == "manage_users:menu":
             context.user_data.pop("awaiting_add_admin", None)
+            self._user_management_selected_admin_id = str(context.user_data.get("selected_admin_id") or "").strip()
             await query.edit_message_text(
                 self.user_management_text(),
                 reply_markup=self.user_management_keyboard(),
@@ -562,26 +576,30 @@ class VPSChangeIPBot:
             )
             return
 
-        if data == "manage_users:delete_menu":
+        if data.startswith("manage_users:select:"):
+            selected_admin_id = data.split(":", 2)[2].strip()
             admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
-            if not admin_ids:
-                await query.edit_message_text(
-                    "当前没有普通管理员。",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("返回", callback_data="manage_users:menu")]
-                    ]),
-                )
-                return
-
+            if selected_admin_id not in admin_ids:
+                context.user_data.pop("selected_admin_id", None)
+                self._user_management_selected_admin_id = ""
+            else:
+                context.user_data["selected_admin_id"] = selected_admin_id
+                self._user_management_selected_admin_id = selected_admin_id
             await query.edit_message_text(
-                "请选择要删除的普通管理员：",
-                reply_markup=self.delete_admin_keyboard(),
+                self.user_management_text(),
+                reply_markup=self.user_management_keyboard(),
             )
             return
 
-        if data.startswith("manage_users:delete:"):
-            admin_id = data.split(":", 2)[2].strip()
+        if data == "manage_users:delete_selected":
+            admin_id = str(context.user_data.get("selected_admin_id") or "").strip()
             admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+            if not admin_id:
+                await query.edit_message_text(
+                    "请先点选一个普通管理员，再点删除选中。",
+                    reply_markup=self.user_management_keyboard(),
+                )
+                return
             if admin_id in admin_ids:
                 admin_ids = [x for x in admin_ids if x != admin_id]
                 rendered_admins = ",".join(admin_ids)
@@ -593,10 +611,9 @@ class VPSChangeIPBot:
                     await query.edit_message_text(f"删除普通管理员失败：{redact_text(str(e))}")
                     return
 
-            await query.edit_message_text(
-                f"已删除普通管理员: {admin_id}\n\n{self.user_management_text()}",
-                reply_markup=self.user_management_keyboard(),
-            )
+            context.user_data.pop("selected_admin_id", None)
+            self._user_management_selected_admin_id = ""
+            await query.edit_message_text(self.user_management_text(), reply_markup=self.user_management_keyboard())
             return
 
     async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -660,6 +677,8 @@ class VPSChangeIPBot:
         admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
 
         context.user_data.pop("awaiting_add_admin", None)
+        context.user_data.pop("selected_admin_id", None)
+        self._user_management_selected_admin_id = ""
         if new_admin_id in super_admin_ids:
             await update.message.reply_text(
                 "该用户已经是超级管理员。\n\n" + self.user_management_text(),
