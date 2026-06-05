@@ -10,7 +10,7 @@ from datetime import time as datetime_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -58,6 +58,7 @@ BOT_COMMANDS = [
     BotCommand("auto_status", "查看自动换IP状态"),
     BotCommand("set_auto_time", "设置自动换IP时间"),
     BotCommand("add_admin", "添加普通管理员"),
+    BotCommand("remove_admin", "删除普通管理员"),
     BotCommand("logs", "查看最近运行日志"),
     BotCommand("health", "检查机器人运行状态"),
     BotCommand("dns_status", "查看DNS更新配置"),
@@ -140,6 +141,7 @@ class VPSChangeIPBot:
             "/auto_status - 查看自动换IP状态\n"
             "/set_auto_time HH:MM - 设置自动换IP时间\n"
             "/add_admin USER_ID - 添加普通管理员（超级管理员）\n"
+            "/remove_admin - 删除普通管理员（超级管理员）\n"
             "/logs - 查看最近运行日志\n"
             "/health - 检查机器人运行状态\n"
             "/dns_status - 查看DNS更新配置（超级管理员）\n"
@@ -489,6 +491,49 @@ class VPSChangeIPBot:
 
         await update.message.reply_text(f"已添加普通管理员: {new_admin_id}")
 
+    async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        if not admin_ids:
+            await update.message.reply_text("当前没有普通管理员。")
+            return
+
+        keyboard = [
+            [InlineKeyboardButton(f"删除 {admin_id}", callback_data=f"remove_admin:{admin_id}")]
+            for admin_id in admin_ids
+        ]
+        await update.message.reply_text(
+            "请选择要删除的普通管理员：",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    async def remove_admin_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        admin_id = (query.data or "").split(":", 1)[1].strip()
+        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        if admin_id not in admin_ids:
+            await query.edit_message_text(f"该用户已经不是普通管理员: {admin_id}")
+            return
+
+        admin_ids = [x for x in admin_ids if x != admin_id]
+        rendered_admins = ",".join(admin_ids)
+        try:
+            config["telegram_admin_user_ids"] = rendered_admins
+            persist_config_value("telegram_admin_user_ids", rendered_admins)
+        except Exception as e:
+            logger.exception(f"删除普通管理员失败: {e}")
+            await query.edit_message_text(f"删除普通管理员失败：{redact_text(str(e))}")
+            return
+
+        await query.edit_message_text(f"已删除普通管理员: {admin_id}")
+
     async def logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
             return
@@ -752,6 +797,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("auto_status", self.auto_status))
         self.app.add_handler(CommandHandler("set_auto_time", self.set_auto_time))
         self.app.add_handler(CommandHandler("add_admin", self.add_admin))
+        self.app.add_handler(CommandHandler("remove_admin", self.remove_admin))
         self.app.add_handler(CommandHandler("logs", self.logs))
         self.app.add_handler(CommandHandler("health", self.health))
         self.app.add_handler(CommandHandler("dns_status", self.dns_status))
@@ -763,6 +809,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("stream", stream_check_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
+        self.app.add_handler(CallbackQueryHandler(self.remove_admin_callback, pattern="^remove_admin:"))
         self.app.add_handler(CallbackQueryHandler(speedtest_callback, pattern="^speedtest_"))
 
         self.setup_jobs()
