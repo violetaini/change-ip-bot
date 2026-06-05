@@ -4,6 +4,8 @@ from typing import Dict, Any
 
 DEFAULT_CONFIG = {
     "telegram_allowed_user_ids": "",
+    "telegram_super_admin_user_ids": "",
+    "telegram_admin_user_ids": "",
     "ip_check_cmd": "curl -s api-ipv4.ip.sb/ip",
     "ip_check_api": "",
     "ip_check_timeout": 60,

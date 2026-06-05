@@ -57,6 +57,7 @@ The bot also supports:
 /auto_stop  Disable scheduled automatic IP changes
 /auto_status Show automatic IP change status
 /set_auto_time HH:MM Set the daily automatic IP change time, Beijing time
+/add_admin USER_ID Add a regular admin, super admin only
 /logs [N]   Show recent bot logs, redacted
 /health     Run a bot health check
 /quality    Run IP quality check and send an image report
@@ -110,6 +111,8 @@ Optional but commonly used:
 
 ```yaml
 telegram_allowed_user_ids: ""
+telegram_super_admin_user_ids: ""
+telegram_admin_user_ids: ""
 auto_change_enabled: false
 auto_change_time: "04:00"
 auto_change_retry_count: 5
@@ -130,7 +133,10 @@ stream_check_timeout: 1200
 
 `telegram_chat_id` can contain one or more chat IDs separated by commas.
 
-If `telegram_allowed_user_ids` is empty, the bot keeps the old behavior and authorizes by `telegram_chat_id`. If you run the bot in a group and want to restrict who can use it, set `telegram_allowed_user_ids`.
+Super admins can run sensitive commands such as `/auto_start`, `/auto_stop`, `/set_auto_time`, `/logs`, and `/add_admin`.
+Regular admins can run `/change` and read-only check commands.
+
+If `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are both empty, the bot keeps the old behavior and authorizes by `telegram_allowed_user_ids` or `telegram_chat_id`.
 
 Do not commit `config.yaml`. It may contain secrets.
 
@@ -186,6 +192,7 @@ journalctl -u vps-ip-bot -f
 - You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
 - `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
+- `/add_admin USER_ID` can only be used by a super admin and writes the new regular admin to `config.yaml`.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
 - Automatic IP changes send the change result first, then verify DNS propagation, then send the IP quality image report.
 - Logs are redacted before writing and before being sent through `/logs`, but do not commit `config.yaml` or any backup containing secrets.

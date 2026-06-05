@@ -3,6 +3,9 @@ telegram_chat_id: ""
 # 可选：单独限制允许操作机器人的 Telegram 用户ID，留空时兼容旧逻辑：
 # 私聊按 telegram_chat_id 授权；群聊按 telegram_chat_id 中的群 chat_id 授权。
 telegram_allowed_user_ids: ""
+# 超级管理员可以执行敏感操作；普通管理员可以执行 /change 和只读检测命令。
+telegram_super_admin_user_ids: ""
+telegram_admin_user_ids: ""
 
 # 状态文件路径，可用环境变量 VPS_IP_BOT_STATE_FILE 覆盖
 state_file: "/var/lib/vps-ip-bot/state.json"

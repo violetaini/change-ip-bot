@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import re
 from datetime import time as datetime_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -31,7 +32,7 @@ from handlers.ip_quality import (
 from handlers.ping import ping_handler
 from handlers.speedtest import speedtest_callback, speedtest_handler
 from handlers.stream_check import stream_check_handler
-from handlers.user_check import check_user_permission
+from handlers.user_check import check_super_admin_permission, check_user_permission
 from services.ip_change_service import perform_ip_change, persist_result_for_notification
 from utils.logger import logger
 from utils.state import get_pending_notification, mark_notification_sent, mark_sending_notify
@@ -50,6 +51,7 @@ BOT_COMMANDS = [
     BotCommand("auto_stop", "关闭自动换IP"),
     BotCommand("auto_status", "查看自动换IP状态"),
     BotCommand("set_auto_time", "设置自动换IP时间"),
+    BotCommand("add_admin", "添加普通管理员"),
     BotCommand("logs", "查看最近运行日志"),
     BotCommand("health", "检查机器人运行状态"),
     BotCommand("quality", "检测IP质量并发送JPG报告"),
@@ -126,6 +128,7 @@ class VPSChangeIPBot:
             "/auto_stop - 关闭自动换IP\n"
             "/auto_status - 查看自动换IP状态\n"
             "/set_auto_time HH:MM - 设置自动换IP时间\n"
+            "/add_admin USER_ID - 添加普通管理员（超级管理员）\n"
             "/logs - 查看最近运行日志\n"
             "/health - 检查机器人运行状态\n"
             "/quality - 检测IP质量并发送JPG报告\n"
@@ -352,7 +355,7 @@ class VPSChangeIPBot:
         return len(jobs)
 
     async def auto_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await check_user_permission(update):
+        if not await check_super_admin_permission(update):
             return
 
         try:
@@ -371,7 +374,7 @@ class VPSChangeIPBot:
             await update.message.reply_text("已写入启用配置，但当前 JobQueue 不可用，未注册定时任务。")
 
     async def auto_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await check_user_permission(update):
+        if not await check_super_admin_permission(update):
             return
 
         try:
@@ -403,7 +406,7 @@ class VPSChangeIPBot:
         )
 
     async def set_auto_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await check_user_permission(update):
+        if not await check_super_admin_permission(update):
             return
 
         if not context.args:
@@ -433,8 +436,45 @@ class VPSChangeIPBot:
         else:
             await update.message.reply_text(f"已设置自动换IP时间为每天北京时间 {new_time}。当前自动换IP未启用。")
 
+    async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("用法: /add_admin USER_ID，例如 /add_admin 123456789")
+            return
+
+        new_admin_id = context.args[0].strip()
+        if not re.fullmatch(r"\d{5,20}", new_admin_id):
+            await update.message.reply_text("管理员 USER_ID 格式无效，应为 5-20 位数字。")
+            return
+
+        super_admin_ids = [
+            x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
+        ]
+        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+
+        if new_admin_id in super_admin_ids:
+            await update.message.reply_text("该用户已经是超级管理员。")
+            return
+        if new_admin_id in admin_ids:
+            await update.message.reply_text("该用户已经是普通管理员。")
+            return
+
+        admin_ids.append(new_admin_id)
+        rendered_admins = ",".join(admin_ids)
+        try:
+            config["telegram_admin_user_ids"] = rendered_admins
+            persist_config_value("telegram_admin_user_ids", rendered_admins)
+        except Exception as e:
+            logger.exception(f"添加普通管理员失败: {e}")
+            await update.message.reply_text(f"添加普通管理员失败：{redact_text(str(e))}")
+            return
+
+        await update.message.reply_text(f"已添加普通管理员: {new_admin_id}")
+
     async def logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await check_user_permission(update):
+        if not await check_super_admin_permission(update):
             return
 
         try:
@@ -540,6 +580,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("auto_stop", self.auto_stop))
         self.app.add_handler(CommandHandler("auto_status", self.auto_status))
         self.app.add_handler(CommandHandler("set_auto_time", self.set_auto_time))
+        self.app.add_handler(CommandHandler("add_admin", self.add_admin))
         self.app.add_handler(CommandHandler("logs", self.logs))
         self.app.add_handler(CommandHandler("health", self.health))
         self.app.add_handler(CommandHandler("quality", ip_quality_handler))

@@ -23,7 +23,7 @@ VPS IP Bot 简洁部署说明
    telegram_chat_id
    ip_change_api
    如果机器人在群里使用，telegram_chat_id 可填群 chat_id；
-   如需限制具体操作者，再填写 telegram_allowed_user_ids（多个用英文逗号分隔）。
+   如需限制具体操作者，再填写 telegram_super_admin_user_ids 和 telegram_admin_user_ids（多个用英文逗号分隔）。
 3. 如果要自动更新华为云 DNS，再填写：
    huawei_dns_enabled: true
    huawei_ak
@@ -53,6 +53,7 @@ VPS IP Bot 简洁部署说明
    /auto_stop
    /auto_status
    /set_auto_time 04:00
+   /add_admin 123456789
    /logs
    /health
    /quality
@@ -98,5 +99,7 @@ systemctl status vps-ip-bot --no-pager
 6. /quality 默认执行 IP.Check.Place 远程脚本，如不需要可设置 ip_quality_enabled: false，或用 ip_quality_cmd 指定自己的检测命令。
 7. /stream 默认执行 1-stream/RegionRestrictionCheck 脚本，自动输入 1，并把结果整理成简报发送。
 8. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
-9. 自动换 IP 成功后会先发送换 IP 结果，再等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
-10. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。
+9. 普通管理员可执行 /change 和只读检测命令；/auto_start、/auto_stop、/set_auto_time、/logs、/add_admin 仅超级管理员可用。
+10. /add_admin USER_ID 可由超级管理员添加普通管理员，并写回 config.yaml。
+11. 自动换 IP 成功后会先发送换 IP 结果，再等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
+12. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。
