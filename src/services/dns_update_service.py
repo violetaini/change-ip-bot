@@ -346,6 +346,18 @@ PROVIDERS = {
     "digitalocean": _update_digitalocean,
 }
 
+SUPPORTED_DNS_PROVIDERS = (
+    "huawei",
+    "cloudflare",
+    "aliyun",
+    "alicloud",
+    "dnspod",
+    "tencent_dnspod",
+    "godaddy",
+    "porkbun",
+    "digitalocean",
+)
+
 
 def update_dns_if_enabled(new_ip: str) -> str:
     if config.get("huawei_dns_enabled") and not _text("dns_provider"):

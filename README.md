@@ -60,6 +60,11 @@ The bot also supports:
 /add_admin USER_ID Add a regular admin, super admin only
 /logs [N]   Show recent bot logs, redacted
 /health     Run a bot health check
+/dns_status Show DNS update configuration, super admin only
+/set_dns_provider PROVIDER Set DNS provider, super admin only
+/set_dns_record ZONE RECORD [TYPE] [TTL] Set DNS record, super admin only
+/dns_update_on Enable DNS updates, super admin only
+/dns_update_off Disable DNS updates, super admin only
 /quality    Run IP quality check and send an image report
 /stream     Run streaming unlock check and send a short summary
 /ping       Test network latency
@@ -214,6 +219,7 @@ journalctl -u vps-ip-bot -f
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG.
 - `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
 - `/add_admin USER_ID` can only be used by a super admin and writes the new regular admin to `config.yaml`.
+- `/set_dns_provider`, `/set_dns_record`, `/dns_update_on`, and `/dns_update_off` can only be used by a super admin and write non-secret DNS settings to `config.yaml`.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.
 - Automatic IP changes update DNS through the configured provider, send the change result, verify DNS propagation, then send the IP quality image report.
 - Logs are redacted before writing and before being sent through `/logs`, but do not commit `config.yaml` or any backup containing secrets.

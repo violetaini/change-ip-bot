@@ -14,10 +14,10 @@ class HuaweiDNSClient:
     def __init__(self):
         self.ak = str(config.get("huawei_ak", "")).strip()
         self.sk = str(config.get("huawei_sk", "")).strip()
-        self.zone_name = str(config.get("huawei_dns_zone_name", "")).strip()
-        self.record_name = str(config.get("huawei_dns_record_name", "")).strip()
-        self.record_type = str(config.get("huawei_dns_record_type", "A")).strip().upper()
-        self.ttl = int(config.get("huawei_dns_ttl", 60))
+        self.zone_name = str(config.get("dns_zone_name") or config.get("huawei_dns_zone_name", "")).strip()
+        self.record_name = str(config.get("dns_record_name") or config.get("huawei_dns_record_name", "")).strip()
+        self.record_type = str(config.get("dns_record_type") or config.get("huawei_dns_record_type", "A")).strip().upper()
+        self.ttl = int(config.get("dns_ttl") or config.get("huawei_dns_ttl", 60))
 
     def validate_config(self):
         missing = []

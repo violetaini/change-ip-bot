@@ -34,7 +34,12 @@ from handlers.speedtest import speedtest_callback, speedtest_handler
 from handlers.stream_check import stream_check_handler
 from handlers.user_check import check_super_admin_permission, check_user_permission
 from services.ip_change_service import perform_ip_change, persist_result_for_notification
-from services.dns_update_service import get_dns_provider_name, get_dns_record_name, is_dns_update_enabled
+from services.dns_update_service import (
+    SUPPORTED_DNS_PROVIDERS,
+    get_dns_provider_name,
+    get_dns_record_name,
+    is_dns_update_enabled,
+)
 from utils.logger import logger
 from utils.state import get_pending_notification, mark_notification_sent, mark_sending_notify
 from utils.network import get_current_ip
@@ -55,6 +60,11 @@ BOT_COMMANDS = [
     BotCommand("add_admin", "添加普通管理员"),
     BotCommand("logs", "查看最近运行日志"),
     BotCommand("health", "检查机器人运行状态"),
+    BotCommand("dns_status", "查看DNS更新配置"),
+    BotCommand("set_dns_provider", "设置DNS服务商"),
+    BotCommand("set_dns_record", "设置DNS解析记录"),
+    BotCommand("dns_update_on", "启用DNS更新"),
+    BotCommand("dns_update_off", "关闭DNS更新"),
     BotCommand("quality", "检测IP质量并发送JPG报告"),
     BotCommand("stream", "检测流媒体解锁并发送简报"),
     BotCommand("ping", "测试网络延迟"),
@@ -132,6 +142,11 @@ class VPSChangeIPBot:
             "/add_admin USER_ID - 添加普通管理员（超级管理员）\n"
             "/logs - 查看最近运行日志\n"
             "/health - 检查机器人运行状态\n"
+            "/dns_status - 查看DNS更新配置（超级管理员）\n"
+            "/set_dns_provider PROVIDER - 设置DNS服务商（超级管理员）\n"
+            "/set_dns_record ZONE RECORD [TYPE] [TTL] - 设置DNS解析记录（超级管理员）\n"
+            "/dns_update_on - 启用DNS更新（超级管理员）\n"
+            "/dns_update_off - 关闭DNS更新（超级管理员）\n"
             "/quality - 检测IP质量并发送JPG报告\n"
             "/stream - 检测流媒体解锁并发送简报\n"
             "/ping - 测试网络延迟\n"
@@ -499,6 +514,160 @@ class VPSChangeIPBot:
             logger.exception(f"读取日志失败: {e}")
             await update.message.reply_text(f"读取日志失败：{redact_text(str(e))}")
 
+    async def dns_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        provider = get_dns_provider_name() or "未配置"
+        zone_name = str(config.get("dns_zone_name") or config.get("huawei_dns_zone_name", "")).strip() or "未配置"
+        record_name = get_dns_record_name().strip() or "未配置"
+        record_type = str(config.get("dns_record_type") or config.get("huawei_dns_record_type", "A")).strip().upper()
+        ttl = int(config.get("dns_ttl") or config.get("huawei_dns_ttl", 60))
+
+        await update.message.reply_text(
+            "DNS更新配置\n"
+            f"状态: {'已启用' if is_dns_update_enabled() else '未启用'}\n"
+            f"服务商: {provider}\n"
+            f"Zone: {zone_name}\n"
+            f"记录: {record_name}\n"
+            f"类型: {record_type}\n"
+            f"TTL: {ttl}\n"
+            f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}"
+        )
+
+    async def set_dns_provider(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "用法: /set_dns_provider PROVIDER\n"
+                f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}"
+            )
+            return
+
+        provider = context.args[0].strip().lower()
+        if provider not in SUPPORTED_DNS_PROVIDERS:
+            await update.message.reply_text(
+                f"不支持的DNS服务商: {provider}\n"
+                f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}"
+            )
+            return
+
+        try:
+            config["dns_provider"] = provider
+            config["dns_update_enabled"] = True
+            persist_config_value("dns_provider", provider)
+            persist_config_value("dns_update_enabled", True)
+        except Exception as e:
+            logger.exception(f"设置DNS服务商失败: {e}")
+            await update.message.reply_text(f"设置DNS服务商失败：{redact_text(str(e))}")
+            return
+
+        await update.message.reply_text(f"已设置DNS服务商为 {provider}，并启用DNS更新。")
+
+    async def set_dns_record(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "用法: /set_dns_record ZONE RECORD [TYPE] [TTL]\n"
+                "例如: /set_dns_record ascf.eu.org seed.ascf.eu.org A 60"
+            )
+            return
+
+        zone_name = context.args[0].strip().rstrip(".")
+        record_name = context.args[1].strip().rstrip(".")
+        record_type = (context.args[2].strip().upper() if len(context.args) >= 3 else str(
+            config.get("dns_record_type") or config.get("huawei_dns_record_type", "A")
+        ).strip().upper())
+        ttl = int(config.get("dns_ttl") or config.get("huawei_dns_ttl", 60))
+
+        if len(context.args) >= 4:
+            try:
+                ttl = int(context.args[3])
+            except ValueError:
+                await update.message.reply_text("TTL 必须是数字。")
+                return
+
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", zone_name) or "." not in zone_name:
+            await update.message.reply_text("ZONE 格式无效，例如 ascf.eu.org")
+            return
+        if not re.fullmatch(r"[A-Za-z0-9_.*-]+(?:\.[A-Za-z0-9_.*-]+)+", record_name):
+            await update.message.reply_text("RECORD 格式无效，例如 seed.ascf.eu.org")
+            return
+        if record_type not in {"A", "AAAA"}:
+            await update.message.reply_text("当前只支持 A 或 AAAA 记录。")
+            return
+        if not (1 <= ttl <= 86400):
+            await update.message.reply_text("TTL 应在 1 到 86400 秒之间。")
+            return
+
+        try:
+            updates = {
+                "dns_zone_name": zone_name,
+                "dns_record_name": record_name,
+                "dns_record_type": record_type,
+                "dns_ttl": ttl,
+                "huawei_dns_zone_name": zone_name,
+                "huawei_dns_record_name": record_name,
+                "huawei_dns_record_type": record_type,
+                "huawei_dns_ttl": ttl,
+            }
+            for key, value in updates.items():
+                config[key] = value
+                persist_config_value(key, value)
+        except Exception as e:
+            logger.exception(f"设置DNS解析记录失败: {e}")
+            await update.message.reply_text(f"设置DNS解析记录失败：{redact_text(str(e))}")
+            return
+
+        await update.message.reply_text(
+            "已设置DNS解析记录\n"
+            f"Zone: {zone_name}\n"
+            f"记录: {record_name}\n"
+            f"类型: {record_type}\n"
+            f"TTL: {ttl}"
+        )
+
+    async def dns_update_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        provider = get_dns_provider_name()
+        if not provider:
+            await update.message.reply_text(
+                "尚未配置DNS服务商。请先使用 /set_dns_provider PROVIDER。"
+            )
+            return
+
+        try:
+            config["dns_update_enabled"] = True
+            persist_config_value("dns_update_enabled", True)
+        except Exception as e:
+            logger.exception(f"启用DNS更新失败: {e}")
+            await update.message.reply_text(f"启用DNS更新失败：{redact_text(str(e))}")
+            return
+
+        await update.message.reply_text(f"已启用DNS更新，当前服务商: {provider}")
+
+    async def dns_update_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        try:
+            config["dns_update_enabled"] = False
+            config["huawei_dns_enabled"] = False
+            persist_config_value("dns_update_enabled", False)
+            persist_config_value("huawei_dns_enabled", False)
+        except Exception as e:
+            logger.exception(f"关闭DNS更新失败: {e}")
+            await update.message.reply_text(f"关闭DNS更新失败：{redact_text(str(e))}")
+            return
+
+        await update.message.reply_text("已关闭DNS更新。")
+
     async def health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
             return
@@ -585,6 +754,11 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("add_admin", self.add_admin))
         self.app.add_handler(CommandHandler("logs", self.logs))
         self.app.add_handler(CommandHandler("health", self.health))
+        self.app.add_handler(CommandHandler("dns_status", self.dns_status))
+        self.app.add_handler(CommandHandler("set_dns_provider", self.set_dns_provider))
+        self.app.add_handler(CommandHandler("set_dns_record", self.set_dns_record))
+        self.app.add_handler(CommandHandler("dns_update_on", self.dns_update_on))
+        self.app.add_handler(CommandHandler("dns_update_off", self.dns_update_off))
         self.app.add_handler(CommandHandler("quality", ip_quality_handler))
         self.app.add_handler(CommandHandler("stream", stream_check_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))

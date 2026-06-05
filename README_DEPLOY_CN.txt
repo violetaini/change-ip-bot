@@ -65,6 +65,11 @@ VPS IP Bot 简洁部署说明
    /add_admin 123456789
    /logs
    /health
+   /dns_status
+   /set_dns_provider cloudflare
+   /set_dns_record ascf.eu.org seed.ascf.eu.org A 60
+   /dns_update_on
+   /dns_update_off
    /quality
    /stream
 
@@ -110,5 +115,7 @@ systemctl status vps-ip-bot --no-pager
 8. 自动换 IP 默认按北京时间 04:00 执行，可用 /set_auto_time HH:MM 修改；失败后默认最多重试 5 次。
 9. 普通管理员可执行 /change 和只读检测命令；/auto_start、/auto_stop、/set_auto_time、/logs、/add_admin 仅超级管理员可用。
 10. /add_admin USER_ID 可由超级管理员添加普通管理员，并写回 config.yaml。
-11. 自动换 IP 成功后会先更新配置的 DNS 服务商，再发送换 IP 结果、等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
-12. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。
+11. /set_dns_provider、/set_dns_record、/dns_update_on、/dns_update_off 仅超级管理员可用，会写回非密钥 DNS 配置。
+12. DNS 服务商的 API 密钥仍建议在 config.yaml 中手动填写，不建议通过 Telegram 聊天发送。
+13. 自动换 IP 成功后会先更新配置的 DNS 服务商，再发送换 IP 结果、等待并检查 DNS 是否解析到新 IP，最后发送 IP 质量图片。
+14. 日志写入和 /logs 输出都会对 bot token、换 IP API、华为云 AK/SK 等敏感信息做脱敏。
