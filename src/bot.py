@@ -496,27 +496,12 @@ class VPSChangeIPBot:
         return INVISIBLE_MESSAGE_TEXT
 
     def user_management_keyboard(self, notice: str = "") -> InlineKeyboardMarkup:
-        super_admin_ids = [
-            x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
-        ]
         admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
         selected_admin_id = str(getattr(self, "_user_management_selected_admin_id", "") or "").strip()
 
         rows = [[InlineKeyboardButton("用户管理", callback_data="manage_users:noop")]]
         if notice:
             rows.append([InlineKeyboardButton(notice, callback_data="manage_users:noop")])
-
-        rows.append([InlineKeyboardButton("超级管理员", callback_data="manage_users:noop")])
-        if super_admin_ids:
-            rows.extend([
-                [
-                    InlineKeyboardButton(admin_id, callback_data="manage_users:noop")
-                    for admin_id in super_admin_ids[idx:idx + 2]
-                ]
-                for idx in range(0, len(super_admin_ids), 2)
-            ])
-        else:
-            rows.append([InlineKeyboardButton("未配置", callback_data="manage_users:noop")])
 
         rows.append([InlineKeyboardButton("普通管理员", callback_data="manage_users:noop")])
         if admin_ids:
