@@ -11,7 +11,16 @@ from datetime import time as datetime_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonCommands,
+    Update,
+)
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -369,9 +378,33 @@ class VPSChangeIPBot:
 
     async def post_init(self, application: Application):
         try:
-            await application.bot.set_my_commands(BOT_COMMANDS)
+            await application.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeDefault())
+            await application.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
             await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-            logger.info("已注册 Telegram 机器人命令菜单与 MenuButton")
+
+            target_chat_ids = set()
+            for raw_val in [
+                config.get("telegram_chat_id"),
+                config.get("telegram_super_admin_user_ids"),
+                config.get("telegram_admin_user_ids"),
+                config.get("telegram_allowed_user_ids"),
+            ]:
+                for item in str(raw_val or "").split(","):
+                    item = item.strip()
+                    if item:
+                        try:
+                            target_chat_ids.add(int(item))
+                        except ValueError:
+                            pass
+
+            for cid in target_chat_ids:
+                try:
+                    await application.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeChat(chat_id=cid))
+                    await application.bot.set_chat_menu_button(chat_id=cid, menu_button=MenuButtonCommands())
+                except Exception as ex:
+                    logger.debug(f"设置单独聊天菜单失败 (chat_id={cid}): {ex}")
+
+            logger.info("已注册 Telegram 机器人命令菜单与 MenuButton（含全局、私聊及管理员作用域）")
         except Exception as e:
             logger.warning(f"注册 Telegram 命令菜单失败: {e}")
 
