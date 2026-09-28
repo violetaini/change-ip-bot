@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -8,13 +9,20 @@ from services.dns_update_service import update_dns_if_enabled
 from utils.logger import logger
 from utils.network import (
     ChangeIPTimeoutError,
+    call_boil_change_ip,
+    call_boil_get_ip,
     call_change_ip_api,
     get_current_ip,
     parse_change_ip_result,
     verify_public_ip_matches,
 )
 from utils.redact import redact_text
-from utils.state import get_last_change_time, update_change_state
+from utils.state import (
+    get_last_change_time,
+    load_state,
+    update_change_state,
+    update_state_keys,
+)
 
 
 @dataclass
@@ -76,6 +84,19 @@ async def _wait_for_public_ip_change(old_ip: str, retries: int = 12, delay: int 
     return ""
 
 
+async def _wait_for_boil_ip_change(old_ip: str, base_url: str, token: str, retries: int = 18, delay: int = 5) -> str:
+    for idx in range(retries):
+        await asyncio.sleep(delay)
+        try:
+            current_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
+            logger.info(f"Boil API 轮询第 {idx + 1}/{retries} 次，当前返回IP: {current_ip}")
+            if current_ip and current_ip != old_ip:
+                return current_ip
+        except Exception as e:
+            logger.warning(f"Boil API 轮询第 {idx + 1}/{retries} 次获取IP失败: {e}")
+    return ""
+
+
 async def _verify_changed_ip(target_ip: str) -> bool:
     if not config.get("ip_change_verify_public_ip", True):
         return True
@@ -98,7 +119,11 @@ def _update_dns_safely(new_ip: str) -> str:
         return dns_message
 
 
-async def perform_ip_change(trigger: str = "manual") -> ChangeResult:
+def get_ip_change_provider_name() -> str:
+    return str(config.get("ip_change_provider") or "classic").strip().lower()
+
+
+async def _perform_classic_ip_change(trigger: str = "manual") -> ChangeResult:
     interval_error = _check_interval()
     if interval_error:
         return ChangeResult(
@@ -208,6 +233,107 @@ async def perform_ip_change(trigger: str = "manual") -> ChangeResult:
             new_ip="",
             trigger=trigger,
         )
+
+
+async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
+    state = load_state()
+    now = time.time()
+    next_allowed_at = float(state.get("boil_next_allowed_at", 0) or 0)
+    if now < next_allowed_at:
+        wait_sec = max(1, int(next_allowed_at - now))
+        next_dt = dt.datetime.fromtimestamp(next_allowed_at).strftime("%H:%M:%S")
+        return ChangeResult(
+            success=False,
+            status="COOLDOWN_PROTECTION",
+            message=f"Boil 频率限制冷却中，还需等待 {wait_sec} 秒（预计可用时间: {next_dt}），已自动拦截以防扣减API配额",
+            trigger=trigger,
+        )
+
+    token = str(config.get("boil_api_token", "")).strip()
+    base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
+    if not token:
+        return ChangeResult(
+            success=False,
+            status="CONFIG_ERROR",
+            message="未配置 boil_api_token，请使用 /set_boil_token 设置或在 config.yaml 中配置",
+            trigger=trigger,
+        )
+
+    boil_old_ip = ""
+    try:
+        boil_old_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
+        logger.info(f"Boil 更换前当前IP: {boil_old_ip}")
+    except Exception as e:
+        logger.warning(f"Boil 更换前通过API获取IP失败，尝试本机公网IP兜底: {e}")
+        try:
+            boil_old_ip = await asyncio.to_thread(get_current_ip)
+        except Exception:
+            pass
+
+    try:
+        api_data = await asyncio.to_thread(call_boil_change_ip, base_url, token, 30)
+    except ChangeIPTimeoutError as e:
+        return ChangeResult(
+            success=False,
+            status="TIMEOUT",
+            message=f"Boil API 请求超时: {e}",
+            old_ip=boil_old_ip,
+            trigger=trigger,
+        )
+    except Exception as e:
+        logger.error(f"调用 Boil 换IP接口失败: {e}")
+        return ChangeResult(
+            success=False,
+            status="BOIL_ERROR",
+            message=f"Boil 换IP失败: {redact_text(str(e))}",
+            old_ip=boil_old_ip,
+            trigger=trigger,
+        )
+
+    next_allowed = float(api_data.get("next_allowed_at") or 0)
+    uses_left = api_data.get("uses_left")
+    update_state_keys({
+        "boil_next_allowed_at": next_allowed,
+        "boil_uses_left": uses_left if uses_left is not None else -1,
+    })
+
+    # 优先通过 Boil API 轮询新IP（每5秒检查一次，最多等待90秒）
+    new_ip = await _wait_for_boil_ip_change(boil_old_ip, base_url, token, retries=18, delay=5)
+    if not new_ip:
+        # 兜底：如果 API 未返回新 IP，尝试检查本机公网 IP（兼容 Bot 部署在目标机自身的情况）
+        new_ip = await _wait_for_public_ip_change(boil_old_ip, retries=3, delay=3)
+
+    if not new_ip:
+        uses_info = f"，今日剩余配额: {uses_left}次" if uses_left is not None else ""
+        return ChangeResult(
+            success=False,
+            status="WAIT_IP_TIMEOUT",
+            message=f"Boil 更换任务已下发{uses_info}，但在规定等待时间内未能通过API获取到新IP",
+            old_ip=boil_old_ip,
+            trigger=trigger,
+            raw=api_data,
+        )
+
+    dns_message = await asyncio.to_thread(_update_dns_safely, new_ip)
+    uses_info = f"；今日剩余配额: {uses_left}次" if uses_left is not None else ""
+    return ChangeResult(
+        success=True,
+        status="BOIL_SUCCESS",
+        message=f"Boil 换IP成功{uses_info}",
+        old_ip=boil_old_ip,
+        new_ip=new_ip,
+        dns_message=dns_message,
+        trigger=trigger,
+        raw=api_data,
+    )
+
+
+async def perform_ip_change(trigger: str = "manual") -> ChangeResult:
+    provider = get_ip_change_provider_name()
+    if provider == "boil":
+        return await _perform_boil_ip_change(trigger=trigger)
+    return await _perform_classic_ip_change(trigger=trigger)
+
 
 
 async def persist_result_for_notification(result: ChangeResult, chat_id: str = "") -> str:

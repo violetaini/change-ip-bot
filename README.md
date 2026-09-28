@@ -1,74 +1,77 @@
 # VPS IP Bot
 
-A Telegram bot for VPS servers that already have an IP switch API.
+A Telegram bot for VPS and proxy servers with automated IP switching, multi-provider DNS updating, scheduled changes, and network diagnostic tools.
 
-This project is useful when your server provider, panel, or custom script exposes an HTTP API that can change the server's public IP. The bot wraps that API with Telegram commands, checks whether the IP really changed, and can update Huawei Cloud DNS after a successful change.
+Supports both **Classic HTTP IP Change APIs** and **Boil Network residential IP API** with dynamic in-bot mode switching and client-side quota protection.
 
 ## What It Does
 
-- Check the current public IP.
-- Trigger your existing IP change API from Telegram.
-- Verify the new public IP after the API returns.
-- Treat API timeouts as success if the public IP actually changed.
-- Update a Huawei Cloud DNS record when enabled.
-- Send the result back to Telegram, with retry notification support.
-- Run scheduled automatic IP changes at a fixed Beijing time, with retry support.
-- Verify DNS propagation after automatic IP changes.
-- Run simple network tools such as ping, speedtest, IP quality reports, and streaming unlock checks.
-- Redact sensitive tokens and API keys before writing logs or sending logs to Telegram.
+- **Dual-mode IP switching**:
+  - **Classic Mode**: Integrates with custom VPS panel / provider HTTP APIs.
+  - **Boil Network Mode**: Direct integration with Boil Network residential IP API (`changeIP` & `getIP`).
+- **Cooldown & Quota Protection**: Respects Boil Network's `next_allowed_at` timestamp client-side to prevent penalizing daily quotas.
+- **Telegram Bot Control**:
+  - Query IP and change status (`/check`, `/ip_status`).
+  - Trigger manual IP change (`/change`).
+  - Switch provider modes dynamically via buttons or commands (`/set_ip_mode`).
+  - Set API URLs and tokens directly from chat (`/set_ip_api`, `/set_boil_token`).
+  - Clears legacy WebApp / Mini App menu buttons automatically on startup.
+- **Multi-Provider DNS Automation**:
+  - Automatically updates DNS A records upon IP change.
+  - Supports **Cloudflare**, **Aliyun**, **Tencent / DNSPod**, **GoDaddy**, **Porkbun**, **DigitalOcean**, and **Huawei Cloud**.
+  - Verifies public DNS propagation after scheduled changes.
+- **Scheduled Automatic Changes**:
+  - Run automatic IP changes at fixed Beijing time (`/set_auto_time`, `/auto_start`, `/auto_stop`).
+  - Configurable retries, delays, and notifications.
+- **Diagnostics & Network Tools**:
+  - IP quality reports with image generation (`/quality`).
+  - Streaming service unlock checking (`/stream`).
+  - Latency ping (`/ping`) and network speed test (`/speedtest`).
+- **Security & Privacy**:
+  - Strict role-based access control (Super Admin vs Admin).
+  - Sensitive token / secret redaction across all logs and messages.
 
-## Important Assumption
+## Supported IP Change Providers
 
-This bot does not create an IP change service by itself.
+### 1. Classic Mode (`classic`)
+- Generic HTTP API returning JSON with `status`, `old_ip`, and `new_ip`.
+- Cooldown controlled locally by `ip_change_interval` (minutes).
+- Verifies public IP change after API call.
 
-You must already have an API like this:
-
-```text
-https://example.com/change-ip
-```
-
-The API should return JSON similar to:
-
-```json
-{
-  "status": "IP changed",
-  "old_ip": "1.2.3.4",
-  "new_ip": "5.6.7.8"
-}
-```
-
-The bot also supports:
-
-```json
-{
-  "status": "IP unchanged",
-  "old_ip": "1.2.3.4",
-  "new_ip": "1.2.3.4"
-}
-```
+### 2. Boil Network Mode (`boil`)
+- Official API integration for Boil Network (`https://ippanel.boil.network`).
+- Queries current residential IP via `POST /api/v1/getIP` without consuming change quotas.
+- Triggers IP change via `POST /api/v1/changeIP`.
+- Displays remaining daily quota (`uses_left`) and dynamic server cooldown (`next_allowed_at`).
+- Client-side cooldown guard (`COOLDOWN_PROTECTION`) prevents accidental early requests that could consume penalty quotas.
+- Polls for new IP via API and updates configured DNS records automatically.
 
 ## Telegram Commands
 
 ```text
-/start      Show help
-/check      Check current IP status
-/change     Change IP and optionally update Huawei Cloud DNS
-/auto_start Enable scheduled automatic IP changes
-/auto_stop  Disable scheduled automatic IP changes
-/auto_status Show automatic IP change status
-/set_auto_time HH:MM Set the daily automatic IP change time, Beijing time
-/manage_users Manage regular admins with buttons, super admin only
-/logs [N]   Show recent bot logs, redacted
-/health     Run a bot health check
-/dns_status Show DNS update configuration, super admin only
-/set_dns_provider PROVIDER Set DNS provider, super admin only
-/set_dns_record ZONE RECORD [TYPE] [TTL] Set DNS record, super admin only
-/dns_update_on Enable DNS updates, super admin only
-/dns_update_off Disable DNS updates, super admin only
-/quality    Run IP quality check and send an image report
-/stream     Run streaming unlock check and send a short summary
-/ping       Test network latency
-/speedtest  Run network speed test
+/start               Show help message
+/check               Check current public IP (or Boil residential IP)
+/change              Trigger IP change and update DNS
+/ip_status           Show current IP change mode, cooldown status, and quota
+/set_ip_mode [mode]  Switch IP mode (classic/boil) with interactive buttons, super admin only
+/set_boil_token      Set Boil API Token, super admin only
+/set_ip_api [url]    Set Classic IP change API URL, super admin only
+/auto_start          Enable scheduled automatic IP changes, super admin only
+/auto_stop           Disable scheduled automatic IP changes, super admin only
+/auto_status         Show automatic IP change status
+/set_auto_time HH:MM Set daily automatic IP change time (Beijing time), super admin only
+/manage_users        Manage regular admins with interactive buttons, super admin only
+/logs [N]            Show recent bot logs (redacted), super admin only
+/health              Run a bot health check
+/dns_status          Show DNS update configuration, super admin only
+/set_dns_provider    Set DNS provider, super admin only
+/set_dns_record      Set DNS zone and record, super admin only
+/dns_update_on       Enable DNS updates, super admin only
+/dns_update_off      Disable DNS updates, super admin only
+/quality             Run IP quality check and send an image report
+/stream              Run streaming unlock check and send summary
+/ping                Test network latency
+/speedtest           Run network speed test
 ```
 
 ## Installation
@@ -109,34 +112,64 @@ Required fields:
 ```yaml
 telegram_bot_token: ""
 telegram_chat_id: ""
-ip_change_api: ""
 ```
 
-Optional but commonly used:
+### IP Change Mode Configuration
+
+Choose one of the following modes:
+
+**Option A: Boil Network Residential IP Mode**
+```yaml
+ip_change_provider: "boil"
+boil_api_base_url: "https://ippanel.boil.network"
+boil_api_token: "your_boil_api_token"
+```
+
+**Option B: Classic Custom HTTP API Mode**
+```yaml
+ip_change_provider: "classic"
+ip_change_api: "https://your-panel.com/api/change-ip"
+ip_change_interval: 2
+ip_change_timeout: 600
+```
+
+### Optional & Advanced Settings
 
 ```yaml
 telegram_allowed_user_ids: ""
 telegram_super_admin_user_ids: ""
 telegram_admin_user_ids: ""
+
+# Automatic Scheduled Changes
 auto_change_enabled: false
 auto_change_time: "04:00"
 auto_change_retry_count: 5
 auto_change_retry_delay_seconds: 60
 auto_change_quality_report: true
+
+# Public DNS Propagation Verification
 dns_verify_enabled: true
 dns_verify_delay_seconds: 60
 dns_verify_retry_count: 10
+
+# Multi-Provider DNS Settings (e.g. Cloudflare)
 dns_update_enabled: false
-dns_provider: ""
-dns_zone_name: ""
-dns_record_name: ""
+dns_provider: "cloudflare"
+dns_zone_name: "example.com"
+dns_record_name: "sub.example.com"
 dns_record_type: "A"
 dns_ttl: 60
+cloudflare_api_token: "your_cloudflare_api_token"
+cloudflare_proxied: false
+
+# Legacy Huawei Cloud DNS (Supported)
 huawei_dns_enabled: false
 huawei_ak: ""
 huawei_sk: ""
 huawei_dns_zone_name: ""
 huawei_dns_record_name: ""
+
+# Diagnostic Scripts
 stream_check_enabled: true
 stream_check_input: "1"
 stream_check_timeout: 1200
@@ -144,17 +177,16 @@ stream_check_timeout: 1200
 
 `telegram_chat_id` can contain one or more chat IDs separated by commas.
 
-Super admins can run sensitive commands such as `/auto_start`, `/auto_stop`, `/set_auto_time`, `/logs`, and `/manage_users`.
+Super admins can run sensitive commands such as `/auto_start`, `/auto_stop`, `/set_auto_time`, `/logs`, `/set_ip_mode`, `/set_boil_token`, `/set_ip_api`, and `/manage_users`.
 Regular admins can run `/change` and read-only check commands.
 
-If `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are both empty, the bot keeps the old behavior and authorizes by `telegram_allowed_user_ids` or `telegram_chat_id`.
+If `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are both empty, the bot keeps the legacy behavior and authorizes by `telegram_allowed_user_ids` or `telegram_chat_id`.
 
-Do not commit `config.yaml`. It may contain secrets.
+Do not commit `config.yaml`. It contains secrets.
 
 Supported DNS providers:
 
 ```text
-huawei
 cloudflare
 aliyun
 dnspod
@@ -162,9 +194,16 @@ tencent_dnspod
 godaddy
 porkbun
 digitalocean
+huawei
 ```
 
-Legacy Huawei Cloud settings remain supported. For new providers, set `dns_update_enabled: true`, `dns_provider`, `dns_zone_name`, `dns_record_name`, and the provider credentials.
+## Running Tests
+
+An automated unit test suite is included in `tests/test_all.py`, testing configuration loading, text redaction, state management, provider routing, cooldown protection, and error handling:
+
+```bash
+python -m unittest tests/test_all.py
+```
 
 ## Run Manually
 

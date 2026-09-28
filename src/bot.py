@@ -6,11 +6,12 @@ import socket
 import subprocess
 import tempfile
 import re
+import datetime as dt
 from datetime import time as datetime_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -43,8 +44,14 @@ from services.dns_update_service import (
     is_dns_update_enabled,
 )
 from utils.logger import logger
-from utils.state import get_pending_notification, mark_notification_sent, mark_sending_notify
-from utils.network import get_current_ip
+from utils.state import (
+    get_last_change_time,
+    get_pending_notification,
+    load_state,
+    mark_notification_sent,
+    mark_sending_notify,
+)
+from utils.network import call_boil_get_ip, get_current_ip
 from utils.redact import redact_text
 
 
@@ -55,7 +62,11 @@ INVISIBLE_MESSAGE_TEXT = "\u2063"
 BOT_COMMANDS = [
     BotCommand("start", "显示帮助和可用命令"),
     BotCommand("check", "检查当前IP状态"),
-    BotCommand("change", "更换IP并同步华为云DNS"),
+    BotCommand("change", "更换IP并同步DNS"),
+    BotCommand("ip_status", "查看换IP配置与冷却状态"),
+    BotCommand("set_ip_mode", "切换换IP模式(经典/Boil)"),
+    BotCommand("set_boil_token", "设置Boil API Token"),
+    BotCommand("set_ip_api", "设置经典模式换IP接口URL"),
     BotCommand("auto_start", "启用自动换IP"),
     BotCommand("auto_stop", "关闭自动换IP"),
     BotCommand("auto_status", "查看自动换IP状态"),
@@ -75,6 +86,16 @@ BOT_COMMANDS = [
 ]
 
 
+def _get_admin_id_list() -> list[str]:
+    val = config.get("telegram_admin_user_ids")
+    return [x.strip() for x in str(val or "").split(",") if x.strip()]
+
+
+def _get_super_admin_id_list() -> list[str]:
+    val = config.get("telegram_super_admin_user_ids")
+    return [x.strip() for x in str(val or "").split(",") if x.strip()]
+
+
 def persist_config_value(key: str, value) -> None:
     config_path = config.get("_loaded_from")
     if not config_path:
@@ -84,20 +105,32 @@ def persist_config_value(key: str, value) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     if isinstance(value, bool):
         rendered = "true" if value else "false"
-    else:
+    elif isinstance(value, (int, float)):
         rendered = str(value)
+    elif value is None:
+        rendered = '""'
+    else:
+        val_str = str(value).strip()
+        if (val_str.startswith('"') and val_str.endswith('"')) or (val_str.startswith("'") and val_str.endswith("'")):
+            rendered = val_str
+        else:
+            rendered = f'"{val_str}"'
 
     prefix = f"{key}:"
-    new_line = f"{key}: {rendered}"
+    found = False
     for idx, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith(prefix) and not stripped.startswith("#"):
-            lines[idx] = new_line
+            indent = line[: len(line) - len(line.lstrip())]
+            lines[idx] = f"{indent}{key}: {rendered}"
+            found = True
             break
-    else:
-        lines.append(new_line)
+    if not found:
+        lines.append(f"{key}: {rendered}")
 
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temp_path.replace(path)
 
 
 def parse_auto_change_time() -> datetime_time:
@@ -137,13 +170,17 @@ class VPSChangeIPBot:
             "欢迎使用 VPS IP 更换工具\n"
             "/start - 显示帮助\n"
             "/check - 检查当前IP状态\n"
-            "/change - 更换IP并同步华为云DNS\n"
-            "/auto_start - 启用自动换IP\n"
-            "/auto_stop - 关闭自动换IP\n"
+            "/change - 更换IP并同步DNS\n"
+            "/ip_status - 查看换IP配置与冷却状态\n"
+            "/set_ip_mode - 切换换IP模式(经典/Boil)（超级管理员）\n"
+            "/set_boil_token TOKEN - 设置Boil API Token（超级管理员）\n"
+            "/set_ip_api URL - 设置经典模式换IP接口URL（超级管理员）\n"
+            "/auto_start - 启用自动换IP（超级管理员）\n"
+            "/auto_stop - 关闭自动换IP（超级管理员）\n"
             "/auto_status - 查看自动换IP状态\n"
-            "/set_auto_time HH:MM - 设置自动换IP时间\n"
+            "/set_auto_time HH:MM - 设置自动换IP时间（超级管理员）\n"
             "/manage_users - 管理管理员用户（超级管理员）\n"
-            "/logs - 查看最近运行日志\n"
+            "/logs - 查看最近运行日志（超级管理员）\n"
             "/health - 检查机器人运行状态\n"
             "/dns_status - 查看DNS更新配置（超级管理员）\n"
             "/set_dns_provider PROVIDER - 设置DNS服务商（超级管理员）\n"
@@ -333,7 +370,8 @@ class VPSChangeIPBot:
     async def post_init(self, application: Application):
         try:
             await application.bot.set_my_commands(BOT_COMMANDS)
-            logger.info("已注册 Telegram 机器人命令菜单")
+            await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+            logger.info("已注册 Telegram 机器人命令菜单与 MenuButton")
         except Exception as e:
             logger.warning(f"注册 Telegram 命令菜单失败: {e}")
 
@@ -468,10 +506,8 @@ class VPSChangeIPBot:
             await update.message.reply_text("管理员 USER_ID 格式无效，应为 5-20 位数字。")
             return
 
-        super_admin_ids = [
-            x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
-        ]
-        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        super_admin_ids = _get_super_admin_id_list()
+        admin_ids = _get_admin_id_list()
 
         if new_admin_id in super_admin_ids:
             await update.message.reply_text("该用户已经是超级管理员。")
@@ -496,7 +532,7 @@ class VPSChangeIPBot:
         return INVISIBLE_MESSAGE_TEXT
 
     def user_management_keyboard(self, notice: str = "") -> InlineKeyboardMarkup:
-        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        admin_ids = _get_admin_id_list()
         selected_admin_id = str(getattr(self, "_user_management_selected_admin_id", "") or "").strip()
 
         rows = [[InlineKeyboardButton("用户管理", callback_data="manage_users:noop")]]
@@ -579,7 +615,7 @@ class VPSChangeIPBot:
 
         if data.startswith("manage_users:select:"):
             selected_admin_id = data.split(":", 2)[2].strip()
-            admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+            admin_ids = _get_admin_id_list()
             if selected_admin_id not in admin_ids:
                 context.user_data.pop("selected_admin_id", None)
                 self._user_management_selected_admin_id = ""
@@ -594,7 +630,7 @@ class VPSChangeIPBot:
 
         if data == "manage_users:delete_selected":
             admin_id = str(context.user_data.get("selected_admin_id") or "").strip()
-            admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+            admin_ids = _get_admin_id_list()
             if not admin_id:
                 await query.edit_message_text(
                     INVISIBLE_MESSAGE_TEXT,
@@ -624,7 +660,7 @@ class VPSChangeIPBot:
         if not await check_super_admin_permission(update):
             return
 
-        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        admin_ids = _get_admin_id_list()
         if not admin_ids:
             await update.message.reply_text("当前没有普通管理员。")
             return
@@ -646,7 +682,7 @@ class VPSChangeIPBot:
         await query.answer()
 
         admin_id = (query.data or "").split(":", 1)[1].strip()
-        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        admin_ids = _get_admin_id_list()
         if admin_id not in admin_ids:
             await query.edit_message_text(f"该用户已经不是普通管理员: {admin_id}")
             return
@@ -678,10 +714,8 @@ class VPSChangeIPBot:
             )
             return
 
-        super_admin_ids = [
-            x.strip() for x in str(config.get("telegram_super_admin_user_ids", "")).split(",") if x.strip()
-        ]
-        admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids", "")).split(",") if x.strip()]
+        super_admin_ids = _get_super_admin_id_list()
+        admin_ids = _get_admin_id_list()
 
         context.user_data.pop("awaiting_add_admin", None)
         context.user_data.pop("selected_admin_id", None)
@@ -887,6 +921,150 @@ class VPSChangeIPBot:
 
         await update.message.reply_text("已关闭DNS更新。")
 
+    async def ip_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        provider = str(config.get("ip_change_provider", "classic")).strip().lower()
+        lines = [f"换IP当前模式: {'Boil Network' if provider == 'boil' else '经典通用API模式'}"]
+
+        state = load_state()
+        if provider == "boil":
+            token = str(config.get("boil_api_token", "")).strip()
+            lines.append(f"Boil Token: {'已配置' if token else '未配置'}")
+            base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
+            lines.append(f"Boil 接口地址: {base_url}")
+            if token:
+                try:
+                    curr_boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 10)
+                    lines.append(f"当前住宅IP: {curr_boil_ip}")
+                except Exception as e:
+                    lines.append(f"当前住宅IP: 获取失败 ({e})")
+
+            uses_left = state.get("boil_uses_left", -1)
+            lines.append(f"今日剩余配额: {uses_left if uses_left >= 0 else '暂无缓存（将在换IP后更新）'}")
+
+            next_allowed_at = float(state.get("boil_next_allowed_at", 0) or 0)
+            now = time.time()
+            if now < next_allowed_at:
+                wait_sec = max(1, int(next_allowed_at - now))
+                next_time_str = dt.datetime.fromtimestamp(next_allowed_at).strftime("%H:%M:%S")
+                lines.append(f"冷却状态: 冷却中，还需等待 {wait_sec} 秒（预计可用: {next_time_str}）")
+            else:
+                lines.append("冷却状态: 就绪（当前无限制）")
+        else:
+            api_url = str(config.get("ip_change_api", "")).strip()
+            lines.append(f"换IP接口URL: {'已配置' if api_url else '未配置'}")
+            interval = int(config.get("ip_change_interval", 2))
+            lines.append(f"最小更换间隔: {interval} 分钟")
+
+        last_time = get_last_change_time()
+        if last_time:
+            last_dt = dt.datetime.fromtimestamp(last_time).strftime("%Y-%m-%d %H:%M:%S")
+            lines.append(f"上次更换时间: {last_dt}")
+            lines.append(f"上次更换结果: {state.get('last_change_status') or '无'}")
+
+        await update.message.reply_text("【换IP状态与配置】\n" + "\n".join(f"- {line}" for line in lines))
+
+    async def set_ip_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if context.args:
+            target = context.args[0].strip().lower()
+            if target not in ("classic", "boil"):
+                await update.message.reply_text("无效的模式，只支持 classic (经典模式) 或 boil (Boil Network 模式)。")
+                return
+
+            try:
+                config["ip_change_provider"] = target
+                persist_config_value("ip_change_provider", target)
+                mode_desc = "Boil Network 模式" if target == "boil" else "经典通用API模式"
+                await update.message.reply_text(f"已切换换IP模式为: {mode_desc} ({target})")
+            except Exception as e:
+                logger.exception(f"切换换IP模式失败: {e}")
+                await update.message.reply_text(f"切换换IP模式失败: {redact_text(str(e))}")
+            return
+
+        current = str(config.get("ip_change_provider", "classic")).strip().lower()
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"{'✅ ' if current == 'classic' else ''}经典通用模式 (classic)",
+                    callback_data="set_ip_mode:classic",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"{'✅ ' if current == 'boil' else ''}Boil Network 模式 (boil)",
+                    callback_data="set_ip_mode:boil",
+                )
+            ],
+        ]
+        await update.message.reply_text(
+            f"请选择换IP服务商模式（当前: {current}）：",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    async def set_ip_mode_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        target = (query.data or "").split(":", 1)[1].strip().lower()
+        if target not in ("classic", "boil"):
+            return
+
+        try:
+            config["ip_change_provider"] = target
+            persist_config_value("ip_change_provider", target)
+            mode_desc = "Boil Network 模式" if target == "boil" else "经典通用API模式"
+            await query.edit_message_text(f"已成功切换换IP模式为: {mode_desc} ({target})")
+        except Exception as e:
+            logger.exception(f"切换换IP模式失败: {e}")
+            await query.edit_message_text(f"切换换IP模式失败: {redact_text(str(e))}")
+
+    async def set_boil_token(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("用法: /set_boil_token TOKEN\n例如: /set_boil_token your_token_here")
+            return
+
+        token = context.args[0].strip()
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        try:
+            config["boil_api_token"] = token
+            persist_config_value("boil_api_token", token)
+            await update.effective_chat.send_message("已成功设置并保存 Boil API Token。")
+        except Exception as e:
+            logger.exception(f"保存 Boil Token 失败: {e}")
+            await update.effective_chat.send_message(f"保存 Boil Token 失败: {redact_text(str(e))}")
+
+    async def set_ip_api(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("用法: /set_ip_api URL\n例如: /set_ip_api https://example.com/change-ip")
+            return
+
+        url = context.args[0].strip()
+        try:
+            config["ip_change_api"] = url
+            persist_config_value("ip_change_api", url)
+            await update.message.reply_text("已成功设置并保存经典模式换IP接口 URL。")
+        except Exception as e:
+            logger.exception(f"保存 IP API URL 失败: {e}")
+            await update.message.reply_text(f"保存 IP API URL 失败: {redact_text(str(e))}")
+
     async def health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
             return
@@ -899,7 +1077,13 @@ class VPSChangeIPBot:
         except Exception as e:
             checks.append(f"公网IP: 获取失败 ({e})")
 
-        checks.append(f"换IP API: {'已配置' if str(config.get('ip_change_api', '')).strip() else '未配置'}")
+        ip_provider = str(config.get("ip_change_provider", "classic")).strip().lower()
+        if ip_provider == "boil":
+            token_set = bool(str(config.get("boil_api_token", "")).strip())
+            checks.append(f"换IP模式: Boil Network ({'Token已配置' if token_set else 'Token未配置'})")
+        else:
+            api_set = bool(str(config.get("ip_change_api", "")).strip())
+            checks.append(f"换IP模式: 经典模式 ({'API已配置' if api_set else 'API未配置'})")
         checks.append(f"自动换IP: {'已启用' if config.get('auto_change_enabled') else '已关闭'}")
         checks.append(f"自动时间: 每天北京时间 {config.get('auto_change_time', '04:00')}")
         checks.append(
@@ -966,6 +1150,10 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("check", check_ip_status))
         self.app.add_handler(CommandHandler("change", change_ip_handler))
+        self.app.add_handler(CommandHandler("ip_status", self.ip_status))
+        self.app.add_handler(CommandHandler("set_ip_mode", self.set_ip_mode))
+        self.app.add_handler(CommandHandler("set_boil_token", self.set_boil_token))
+        self.app.add_handler(CommandHandler("set_ip_api", self.set_ip_api))
         self.app.add_handler(CommandHandler("auto_start", self.auto_start))
         self.app.add_handler(CommandHandler("auto_stop", self.auto_stop))
         self.app.add_handler(CommandHandler("auto_status", self.auto_status))
@@ -984,6 +1172,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("stream", stream_check_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
+        self.app.add_handler(CallbackQueryHandler(self.set_ip_mode_callback, pattern="^set_ip_mode:"))
         self.app.add_handler(CallbackQueryHandler(self.manage_users_callback, pattern="^manage_users:"))
         self.app.add_handler(CallbackQueryHandler(self.remove_admin_callback, pattern="^remove_admin:"))
         self.app.add_handler(CallbackQueryHandler(speedtest_callback, pattern="^speedtest_"))

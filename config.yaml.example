@@ -15,13 +15,20 @@ ip_check_cmd: "curl -s api-ipv4.ip.sb/ip"
 ip_check_api: ""
 ip_check_timeout: 60
 
-# IP更换配置
+# IP更换模式配置: classic (经典自定义API) 或 boil (Boil Network 住宅IP)
+ip_change_provider: "classic"
+
+# 经典模式配置
 ip_change_api: ""
 ip_change_interval: 2
 ip_change_timeout: 600
 ip_change_verify_public_ip: true
 ip_change_verify_delay: 5
 ip_change_retry_verify_count: 3
+
+# Boil Network 配置
+boil_api_base_url: "https://ippanel.boil.network"
+boil_api_token: ""
 
 # 自动换IP配置
 auto_change_enabled: false

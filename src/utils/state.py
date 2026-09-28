@@ -36,6 +36,8 @@ def _default_state() -> Dict[str, Any]:
         "sending_notify": False,
         "notified_at": 0,
         "updated_at": 0,
+        "boil_next_allowed_at": 0,
+        "boil_uses_left": -1,
     }
 
 
@@ -61,8 +63,18 @@ def load_state() -> Dict[str, Any]:
 
 def save_state(data: Dict[str, Any]) -> None:
     _ensure_parent()
-    with open(_state_file(), "w", encoding="utf-8") as f:
+    target = _state_file()
+    temp_target = f"{target}.tmp.{os.getpid()}"
+    with open(temp_target, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(temp_target, target)
+
+
+def update_state_keys(updates: Dict[str, Any]) -> None:
+    state = load_state()
+    state.update(updates)
+    state["updated_at"] = time.time()
+    save_state(state)
 
 
 def get_last_change_time() -> float:

@@ -135,3 +135,77 @@ def verify_public_ip_matches(target_ip: str) -> bool:
         return current_ip == target_ip
     except Exception:
         return False
+
+
+def call_boil_change_ip(base_url: str, token: str, timeout: int = 30) -> Dict[str, Any]:
+    clean_base = str(base_url or "https://ippanel.boil.network").strip().rstrip("/")
+    url = f"{clean_base}/api/v1/changeIP"
+    headers = {
+        "Authorization": f"Bearer {str(token or '').strip()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    try:
+        response = requests.post(url, headers=headers, timeout=timeout)
+    except requests.exceptions.ReadTimeout as e:
+        raise ChangeIPTimeoutError(f"Boil API 读取超时（{timeout}秒）") from e
+    except requests.exceptions.ConnectTimeout as e:
+        raise ChangeIPTimeoutError(f"Boil API 连接超时（{timeout}秒）") from e
+    except requests.exceptions.Timeout as e:
+        raise ChangeIPTimeoutError(f"Boil API 超时（{timeout}秒）") from e
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Boil API 请求失败: {e.__class__.__name__}") from e
+
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Boil API 未返回有效JSON: {response.text.strip()[:200]}")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Boil API 返回格式异常: {data}")
+
+    logger.info(f"Boil 换IP API 响应 (HTTP {response.status_code}): {redact_text(str(data))}")
+
+    if response.status_code in (400, 405):
+        err_msg = str(data.get("error") or data.get("message") or f"HTTP {response.status_code}")
+        raise RuntimeError(f"Boil 接口错误: {err_msg}")
+
+    if not response.ok:
+        raise RuntimeError(f"Boil API HTTP错误 {response.status_code}: {data}")
+
+    return data
+
+
+def call_boil_get_ip(base_url: str, token: str, timeout: int = 30) -> str:
+    clean_base = str(base_url or "https://ippanel.boil.network").strip().rstrip("/")
+    url = f"{clean_base}/api/v1/getIP"
+    headers = {
+        "Authorization": f"Bearer {str(token or '').strip()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    try:
+        response = requests.post(url, headers=headers, timeout=timeout)
+    except Exception as e:
+        raise RuntimeError(f"Boil 获取IP请求失败: {e}") from e
+
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Boil 获取IP未返回有效JSON: {response.text.strip()[:200]}")
+
+    if response.status_code in (400, 405):
+        err_msg = str(data.get("error") or f"HTTP {response.status_code}")
+        raise RuntimeError(f"Boil 获取IP失败: {err_msg}")
+
+    if not response.ok or not data.get("ok"):
+        raise RuntimeError(f"Boil 获取IP异常: {data}")
+
+    ip = str(data.get("ip", "")).strip()
+    if not ip or not is_valid_ipv4(ip):
+        raise RuntimeError(f"Boil 返回的IP无效: {ip}")
+
+    return ip
+

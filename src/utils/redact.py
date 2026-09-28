@@ -5,6 +5,7 @@ SENSITIVE_PATTERNS = [
     re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"(?i)(token|api[_-]?key|secret|password|passwd|authorization)=([^&\s]+)"),
     re.compile(r"(?i)(token|api[_-]?key|secret|password|passwd|authorization):\s*([^\s,]+)"),
+    re.compile(r"(?i)\bBearer\s+([A-Za-z0-9_\-\.]{15,})\b"),
 ]
 
 
@@ -17,6 +18,7 @@ def redact_text(text: str) -> str:
         for key in (
             "telegram_bot_token",
             "ip_change_api",
+            "boil_api_token",
             "huawei_ak",
             "huawei_sk",
             "cloudflare_api_token",

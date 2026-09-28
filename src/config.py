@@ -10,7 +10,10 @@ DEFAULT_CONFIG = {
     "ip_check_api": "",
     "ip_check_timeout": 60,
     "state_file": "/var/lib/vps-ip-bot/state.json",
+    "ip_change_provider": "classic",
     "ip_change_api": "",
+    "boil_api_base_url": "https://ippanel.boil.network",
+    "boil_api_token": "",
     "ip_change_interval": 2,
     "ip_change_timeout": 600,
     "ip_change_verify_public_ip": True,
@@ -93,6 +96,12 @@ def load_config() -> Dict[str, Any]:
 
     config = {**DEFAULT_CONFIG, **user_config}
 
+    for key, val in list(config.items()):
+        if key.endswith("_user_ids") and val is None:
+            config[key] = ""
+
+    config["ip_change_provider"] = str(config.get("ip_change_provider") or "classic").strip().lower()
+
     required_fields = ["telegram_bot_token", "telegram_chat_id"]
     for field in required_fields:
         if not config.get(field):
@@ -110,4 +119,8 @@ def load_config() -> Dict[str, Any]:
     return config
 
 
-config = load_config()
+try:
+    config = load_config()
+except FileNotFoundError:
+    config = {**DEFAULT_CONFIG, "_loaded_from": None}
+

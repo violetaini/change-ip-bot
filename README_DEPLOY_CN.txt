@@ -18,10 +18,18 @@ VPS IP Bot 简洁部署说明
 三、配置
 1. 编辑配置文件：
    nano /opt/vps-change-ip/config.yaml
-2. 至少填写这些：
+2. 基础配置：
    telegram_bot_token
    telegram_chat_id
-   ip_change_api
+   
+   若使用经典自建API换IP模式：
+   ip_change_provider: classic
+   ip_change_api: https://your-domain.com/change-ip
+
+   若使用 Boil Network 住宅IP模式：
+   ip_change_provider: boil
+   boil_api_token: a52898xxxxxxxxxx
+
    如果机器人在群里使用，telegram_chat_id 可填群 chat_id；
    如需限制具体操作者，再填写 telegram_super_admin_user_ids 和 telegram_admin_user_ids（多个用英文逗号分隔）。
 3. 如果要自动更新 DNS，可使用统一 DNS 配置：
@@ -57,6 +65,10 @@ VPS IP Bot 简洁部署说明
 先在 Telegram 测试：
    /start
    /check
+   /ip_status
+   /set_ip_mode boil (或 /set_ip_mode classic)
+   /set_boil_token <your_token>
+   /set_ip_api https://example.com/change-ip
    /change
    /auto_start
    /auto_stop
