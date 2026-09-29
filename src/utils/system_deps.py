@@ -121,7 +121,7 @@ def ensure_system_dependencies() -> Dict[str, Any]:
         if missing_cairo:
             pkgs_to_install.append("libcairo2")
         if missing_font:
-            pkgs_to_install.append("fonts-wqy-zenhei")
+            pkgs_to_install.extend(["fonts-wqy-zenhei", "fonts-wqy-microhei"])
         if missing_curl:
             pkgs_to_install.append("curl")
         cmd = [

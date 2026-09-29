@@ -336,6 +336,13 @@ class TestQualityDegradation(unittest.IsolatedAsyncioTestCase):
                 break
         self.assertTrue(found_link, "Fallback message should contain SVG link and downgrade notice")
 
+    def test_patch_svg_cjk_font(self):
+        from handlers.ip_quality import patch_svg_cjk_font
+        raw_svg = b'<svg><style>* { font-family: SimHei, Consolas, DejaVu Sans Mono, monospace; }</style></svg>'
+        patched = patch_svg_cjk_font(raw_svg)
+        self.assertIn(b"WenQuanYi Zen Hei Mono", patched)
+        self.assertIn(b"DejaVu Sans Mono", patched)
+
 
 if __name__ == "__main__":
     unittest.main()

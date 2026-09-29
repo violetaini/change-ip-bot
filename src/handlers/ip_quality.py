@@ -53,6 +53,27 @@ def find_browser_binary() -> str:
     return ""
 
 
+def patch_svg_cjk_font(svg_bytes: bytes) -> bytes:
+    """Ensure Chinese fonts take precedence over Latin-only fonts (like DejaVu Sans Mono)
+
+    so CairoSVG renders Chinese characters correctly without tofu (□) boxes.
+    """
+    try:
+        text = svg_bytes.decode("utf-8", errors="replace")
+        if "font-family" in text:
+            def replacer(match):
+                original = match.group(1).strip()
+                if any(k in original for k in ("WenQuanYi", "wqy", "Noto Sans Mono CJK", "Noto Sans CJK")):
+                    return match.group(0)
+                return f'font-family: "WenQuanYi Zen Hei Mono", "WenQuanYi Micro Hei Mono", "Noto Sans Mono CJK SC", {original}'
+
+            text = re.sub(r'font-family:\s*([^;>]+)', replacer, text)
+        return text.encode("utf-8")
+    except Exception as e:
+        logger.warning(f"修补SVG中文字体失败，使用原SVG: {e}")
+        return svg_bytes
+
+
 def render_svg_url_to_png(url: str, png_path: str) -> None:
     browser = find_browser_binary()
     if not browser:
@@ -66,8 +87,10 @@ def render_svg_url_to_png(url: str, png_path: str) -> None:
         try:
             resp = requests.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
-            cairosvg.svg2png(bytestring=resp.content, write_to=png_path, output_width=1600)
-        except Exception:
+            patched_content = patch_svg_cjk_font(resp.content)
+            cairosvg.svg2png(bytestring=patched_content, write_to=png_path, output_width=1600)
+        except Exception as e:
+            logger.warning(f"通过网络请求并修补SVG渲染失败，尝试直接传递URL: {e}")
             cairosvg.svg2png(url=url, write_to=png_path, output_width=1600)
 
         if not os.path.exists(png_path):
