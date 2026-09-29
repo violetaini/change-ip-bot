@@ -271,8 +271,75 @@ stream_check_input: "2"                # Auto input: 2=Global+HK, 1=Global+TW, 3
 stream_check_timeout: 1200
 ```
 
+## 8. Multi-Server Management Configuration
+
+When managing multiple VPS, residential broadband, or cloud nodes from a single bot, configure the `servers:` list in `config.yaml`.
+
+### A. Structure & Override Rules
+
+```yaml
+# Root-level configuration (all nodes inherit defaults from here)
+telegram_bot_token: "123456789:ABCdefGhIJKlmNoPQRstuvWXyz"
+telegram_chat_id: "987654321"
+ip_change_provider: "generic"
+dns_provider: "cloudflare"
+cloudflare_api_token: "global_cf_token"
+auto_change_enabled: true
+auto_change_time: "04:00"
+
+# Managed nodes list
+servers:
+  - id: "hkt"                               # Unique server identifier (letters/numbers/underscores)
+    name: "Hong Kong HKT Residential"       # User-friendly display name
+    ip_change_provider: "generic"           # IP switching engine
+    ip_change_api: "http://192.168.1.100:8080/reconnect"
+    remote_ssh_enabled: true                # Enable SSH diagnostics tunnel
+    remote_ssh_host: "hkt.example.com"
+    remote_ssh_port: 22
+    remote_ssh_user: "root"
+    remote_ssh_key_path: "/opt/vps-change-ip/hkt_ssh.key"
+    dns_update_enabled: true
+    dns_record_name: "hkt.example.com"
+    dns_zone_name: "example.com"
+    auto_change_enabled: true
+    auto_change_time: "04:00"
+
+  - id: "tokyo"
+    name: "Tokyo VPS Node"
+    ip_change_provider: "generic"
+    ip_change_api: "https://api.tokyo-vps.com/change"
+    remote_ssh_enabled: false               # Local node, no SSH needed
+    dns_update_enabled: true
+    dns_record_name: "tokyo.example.com"
+    dns_zone_name: "example.com"
+    auto_change_enabled: true
+    auto_change_time: "04:30"
+
+  - id: "boil_us"
+    name: "US Boil Residential Node"
+    ip_change_provider: "boil"
+    boil_api_base_url: "https://ippanel.boil.network"
+    boil_api_token: "your_boil_api_token"
+    dns_update_enabled: false
+    auto_change_enabled: false
+```
+
+### B. Core Mechanisms
+
+1. **Inheritance & Local Overrides**:
+   - Any property omitted within a server item automatically inherits the root-level configuration.
+   - Each server `id` must be globally unique.
+2. **State Isolation & Concurrency Guard**:
+   - Node state is partitioned under `state["servers"][server_id]` (isolated last IP, change status, Boil quota/cooldown).
+   - Each node possesses its own `asyncio.Lock` change-guard so rotations execute concurrently without blocking.
+3. **Independent Scheduled Jobs**:
+   - Separate daily cron jobs are scheduled per server according to its `auto_change_enabled` and `auto_change_time`.
+4. **100% Backward Compatibility**:
+   - If `servers:` is omitted or empty, the bot seamlessly operates in single-server mode with identical legacy behavior.
+
 ---
 
-## 8. Full Example Template
+## 9. Full Example Template
 
 See [`config.yaml.example`](file:///D:/myprojetct/change-ip-bot/config.yaml.example) for the complete, ready-to-use template.
+

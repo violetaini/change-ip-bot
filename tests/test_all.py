@@ -4,7 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure src is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -852,5 +852,268 @@ class TestMainlandDomesticProbe(unittest.TestCase):
         self.assertIn("正常 (HTTP 200, 握手 280ms)", desc)
 
 
+
+class TestMultiServerManagement(unittest.TestCase):
+    def test_single_server_backward_compatibility(self):
+        from config import get_server_config, get_servers, is_multi_server_mode
+
+        cfg = {
+            "telegram_bot_token": "token123",
+            "telegram_chat_id": "111,222",
+            "ip_change_provider": "generic",
+            "ip_change_api": "https://example.com/change",
+        }
+        self.assertFalse(is_multi_server_mode(cfg))
+        servers = get_servers(cfg)
+        self.assertEqual(len(servers), 1)
+        self.assertEqual(servers[0]["id"], "default")
+        self.assertEqual(servers[0]["name"], "默认服务器")
+        self.assertEqual(servers[0]["ip_change_provider"], "generic")
+        self.assertEqual(servers[0]["ip_change_api"], "https://example.com/change")
+
+        # get_server_config
+        self.assertIsNotNone(get_server_config("default", cfg))
+        self.assertIsNone(get_server_config("other", cfg))
+
+    def test_multi_server_configuration_and_overrides(self):
+        from config import get_server_config, get_servers, is_multi_server_mode
+
+        cfg = {
+            "telegram_bot_token": "token123",
+            "telegram_chat_id": "111",
+            "ip_change_provider": "generic",
+            "auto_change_enabled": True,
+            "servers": [
+                {
+                    "id": "hkt",
+                    "name": "香港 HKT 家宽",
+                    "ip_change_provider": "generic",
+                    "ip_change_api": "http://192.168.1.100/change",
+                    "remote_ssh_enabled": True,
+                    "remote_ssh_host": "192.168.1.100",
+                    "auto_change_time": "03:30",
+                },
+                {
+                    "id": "tokyo_boil",
+                    "name": "东京 Boil 住宅",
+                    "ip_change_provider": "boil",
+                    "boil_api_token": "tokyo_token",
+                    "auto_change_enabled": False,
+                },
+            ],
+        }
+        self.assertTrue(is_multi_server_mode(cfg))
+        servers = get_servers(cfg)
+        self.assertEqual(len(servers), 2)
+
+        s1 = servers[0]
+        self.assertEqual(s1["id"], "hkt")
+        self.assertEqual(s1["name"], "香港 HKT 家宽")
+        self.assertEqual(s1["ip_change_api"], "http://192.168.1.100/change")
+        self.assertTrue(s1["remote_ssh_enabled"])
+        self.assertEqual(s1["auto_change_time"], "03:30")
+        self.assertEqual(s1["telegram_bot_token"], "token123")  # Inherited from root
+
+        s2 = servers[1]
+        self.assertEqual(s2["id"], "tokyo_boil")
+        self.assertEqual(s2["name"], "东京 Boil 住宅")
+        self.assertEqual(s2["ip_change_provider"], "boil")
+        self.assertEqual(s2["boil_api_token"], "tokyo_token")
+        self.assertFalse(s2["auto_change_enabled"])  # Override
+        self.assertFalse(s2.get("remote_ssh_enabled", False))
+
+        # Lookup by id (case-insensitive)
+        self.assertEqual(get_server_config("HKT", cfg)["id"], "hkt")
+        self.assertEqual(get_server_config("tokyo_boil", cfg)["id"], "tokyo_boil")
+        self.assertIsNone(get_server_config("unknown", cfg))
+
+    def test_state_partitioning_per_server(self):
+        import tempfile
+        from utils.state import (
+            get_all_pending_notifications,
+            get_user_selected_server,
+            load_server_state,
+            mark_notification_sent,
+            mark_sending_notify,
+            save_server_state,
+            set_user_selected_server,
+            update_server_change_state,
+        )
+
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
+            temp_state_path = f.name
+
+        from config import config
+        orig_state_file = config.get("state_file")
+        config["state_file"] = temp_state_path
+
+        try:
+            # 1. Test isolated state saves
+            save_server_state("srv1", {"custom_prop": 100})
+            save_server_state("srv2", {"custom_prop": 200})
+
+            s1 = load_server_state("srv1")
+            s2 = load_server_state("srv2")
+            self.assertEqual(s1.get("custom_prop"), 100)
+            self.assertEqual(s2.get("custom_prop"), 200)
+
+            # 2. Test update_server_change_state
+            update_server_change_state(
+                server_id="srv1",
+                success=True,
+                status="成功",
+                old_ip="1.1.1.1",
+                new_ip="1.1.1.2",
+            )
+            s1_after = load_server_state("srv1")
+            s2_after = load_server_state("srv2")
+            self.assertEqual(s1_after.get("last_new_ip"), "1.1.1.2")
+            self.assertEqual(s2_after.get("last_new_ip"), "")
+
+            # 3. Test pending notification across servers
+            mark_sending_notify(False, server_id="srv1")
+            save_server_state("srv1", {"pending_notify": True, "last_message": "Msg srv1"})
+            save_server_state("srv2", {"pending_notify": True, "last_message": "Msg srv2"})
+
+            pending_all = get_all_pending_notifications()
+            p_sids = {sid for sid, _ in pending_all}
+            self.assertIn("srv1", p_sids)
+            self.assertIn("srv2", p_sids)
+
+            # Mark one sent
+            mark_notification_sent(server_id="srv1")
+            pending_after = get_all_pending_notifications()
+            p_sids_after = {sid for sid, _ in pending_after}
+            self.assertNotIn("srv1", p_sids_after)
+            self.assertIn("srv2", p_sids_after)
+
+            # 4. User server selection
+            set_user_selected_server(999888, "srv2")
+            self.assertEqual(get_user_selected_server(999888), "srv2")
+            self.assertIsNone(get_user_selected_server(111111))
+        finally:
+            config["state_file"] = orig_state_file
+            if os.path.exists(temp_state_path):
+                os.remove(temp_state_path)
+
+    def test_per_server_change_lock_isolation(self):
+        from services.ip_change_service import get_server_change_lock
+
+        lock1 = get_server_change_lock("node_1")
+        lock2 = get_server_change_lock("node_2")
+        lock1_again = get_server_change_lock("node_1")
+
+        self.assertIsNot(lock1, lock2)
+        self.assertIs(lock1, lock1_again)
+
+
+class TestIPChangeServiceMultiServer(unittest.IsolatedAsyncioTestCase):
+    @patch("services.ip_change_service.get_last_change_time", return_value=0)
+    @patch("services.ip_change_service.get_active_public_ipv4")
+    @patch("services.ip_change_service._update_dns_safely", return_value="DNS 更新成功")
+    @patch("services.ip_change_service.get_current_ip", return_value="10.0.0.1")
+    @patch("requests.get")
+    async def test_perform_ip_change_with_server_config(
+        self,
+        mock_requests_get,
+        mock_get_ip,
+        mock_update_dns,
+        mock_get_active_ip,
+        mock_last_time,
+    ):
+        from services.ip_change_service import perform_ip_change
+
+        server_cfg = {
+            "id": "tokyo_vps",
+            "name": "东京 VPS 节点",
+            "ip_change_provider": "generic",
+            "ip_change_api": "https://example.com/tokyo/change",
+            "ip_change_interval": 1,
+            "ip_change_poll_delay": 0,
+            "dns_update_enabled": True,
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "ok"
+        mock_requests_get.return_value = mock_resp
+        mock_get_active_ip.side_effect = ["10.0.0.1", "10.0.0.2"]
+
+        result = await perform_ip_change(trigger="manual", server_config=server_cfg)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.server_id, "tokyo_vps")
+        self.assertEqual(result.server_name, "东京 VPS 节点")
+        self.assertEqual(result.new_ip, "10.0.0.2")
+        self.assertEqual(result.old_ip, "10.0.0.1")
+        mock_requests_get.assert_called_once_with("https://example.com/tokyo/change", timeout=60)
+
+
+class TestServerSelection(unittest.IsolatedAsyncioTestCase):
+    @patch("config.config", {
+        "servers": [
+            {"id": "hkt", "name": "香港 HKT"},
+            {"id": "tokyo", "name": "东京"},
+        ]
+    })
+    async def test_resolve_target_server_by_arg(self):
+        from handlers.server_selection import resolve_target_server
+
+        update = MagicMock()
+        update.effective_user.id = 12345
+        context = MagicMock()
+        context.args = ["hkt"]
+
+        cfg, is_all, prompt = await resolve_target_server(update, context, "check", allow_all=True)
+        self.assertFalse(prompt)
+        self.assertFalse(is_all)
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg["id"], "hkt")
+        self.assertEqual(context.args, [])  # Arg consumed
+
+    @patch("config.config", {
+        "servers": [
+            {"id": "hkt", "name": "香港 HKT"},
+            {"id": "tokyo", "name": "东京"},
+        ]
+    })
+    async def test_resolve_target_server_all(self):
+        from handlers.server_selection import resolve_target_server
+
+        update = MagicMock()
+        update.effective_user.id = 12345
+        context = MagicMock()
+        context.args = ["all"]
+
+        cfg, is_all, prompt = await resolve_target_server(update, context, "change", allow_all=True)
+        self.assertFalse(prompt)
+        self.assertTrue(is_all)
+        self.assertIsNone(cfg)
+
+    @patch("config.config", {
+        "servers": [
+            {"id": "hkt", "name": "香港 HKT"},
+            {"id": "tokyo", "name": "东京"},
+        ]
+    })
+    async def test_resolve_target_server_prompt_when_none(self):
+        from handlers.server_selection import resolve_target_server
+        from utils.state import set_user_selected_server
+
+        update = MagicMock()
+        update.effective_user.id = 777888
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = []
+
+        cfg, is_all, prompt = await resolve_target_server(update, context, "ping", allow_all=False)
+        self.assertTrue(prompt)
+        self.assertFalse(is_all)
+        self.assertIsNone(cfg)
+        update.message.reply_text.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

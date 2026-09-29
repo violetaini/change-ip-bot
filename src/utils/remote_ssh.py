@@ -62,7 +62,7 @@ def resolve_via_cloudflare_doh(hostname: str, timeout: int = 5) -> str:
     return ""
 
 
-def resolve_target_host(hostname: str, force_refresh: bool = False) -> str:
+def resolve_target_host(hostname: str, force_refresh: bool = False, server_config: Optional[Dict[str, Any]] = None) -> str:
     clean_host = str(hostname or "").strip().rstrip(".")
     if not clean_host:
         return ""
@@ -77,13 +77,14 @@ def resolve_target_host(hostname: str, force_refresh: bool = False) -> str:
         if cached:
             return cached
 
+    cfg = server_config if server_config is not None else config
     # 3. If Boil mode, query live Boil API (fastest authoritative source)
     try:
         from utils.network import call_boil_get_ip
-        provider = str(config.get("ip_change_provider", "classic")).strip().lower()
+        provider = str(cfg.get("ip_change_provider", "generic")).strip().lower()
         if provider == "boil":
-            token = str(config.get("boil_api_token", "")).strip()
-            base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
+            token = str(cfg.get("boil_api_token", "")).strip()
+            base_url = str(cfg.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
             if token:
                 live_ip = call_boil_get_ip(base_url, token, timeout=5)
                 if live_ip:
@@ -106,22 +107,24 @@ def resolve_target_host(hostname: str, force_refresh: bool = False) -> str:
     return clean_host
 
 
-def is_remote_ssh_enabled() -> bool:
-    return bool(config.get("remote_ssh_enabled", False))
+def is_remote_ssh_enabled(server_config: Optional[Dict[str, Any]] = None) -> bool:
+    cfg = server_config if server_config is not None else config
+    return bool(cfg.get("remote_ssh_enabled", False))
 
 
-def get_ssh_config(force_refresh: bool = False) -> Dict[str, Any]:
-    raw_host = str(config.get("remote_ssh_host") or "").strip()
-    target_ip = resolve_target_host(raw_host, force_refresh=force_refresh)
+def get_ssh_config(force_refresh: bool = False, server_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cfg = server_config if server_config is not None else config
+    raw_host = str(cfg.get("remote_ssh_host") or "").strip()
+    target_ip = resolve_target_host(raw_host, force_refresh=force_refresh, server_config=server_config)
 
     return {
         "raw_host": raw_host,
         "host": target_ip,
-        "port": int(config.get("remote_ssh_port") or 22),
-        "user": str(config.get("remote_ssh_user") or "root").strip(),
-        "key_path": str(config.get("remote_ssh_key_path") or "").strip(),
-        "password": str(config.get("remote_ssh_password") or "").strip(),
-        "timeout": int(config.get("remote_ssh_timeout") or 300),
+        "port": int(cfg.get("remote_ssh_port") or 22),
+        "user": str(cfg.get("remote_ssh_user") or "root").strip(),
+        "key_path": str(cfg.get("remote_ssh_key_path") or "").strip(),
+        "password": str(cfg.get("remote_ssh_password") or "").strip(),
+        "timeout": int(cfg.get("remote_ssh_timeout") or 300),
     }
 
 
@@ -151,8 +154,9 @@ def run_remote_ssh_command(
     timeout: int = 300,
     input_data: Optional[str] = None,
     allow_retry_on_ip_change: bool = True,
+    server_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, str]:
-    ssh_cfg = get_ssh_config(force_refresh=False)
+    ssh_cfg = get_ssh_config(force_refresh=False, server_config=server_config)
     prefix = build_ssh_command_prefix(ssh_cfg)
     full_cmd = prefix + [command_str]
 
@@ -172,21 +176,21 @@ def run_remote_ssh_command(
         res = subprocess.run(full_cmd, **run_kwargs)
         # 针对 SSH 常见连接失败返回码（255：网络不可达/拒绝连接/主机失联），尝试自愈重试
         if res.returncode == 255 and allow_retry_on_ip_change and ssh_cfg.get("raw_host"):
-            logger.warning(f"远程 SSH 连接失败 (code 255)，检查目标 IP 是否已变更...")
-            new_ip = resolve_target_host(ssh_cfg["raw_host"], force_refresh=True)
+            logger.warning("远程 SSH 连接失败 (code 255)，检查目标 IP 是否已变更...")
+            new_ip = resolve_target_host(ssh_cfg["raw_host"], force_refresh=True, server_config=server_config)
             if new_ip and new_ip != ssh_cfg["host"]:
                 logger.info(f"检测到目标 IP 已变更 ({ssh_cfg['host']} -> {new_ip})，正在自动重试 SSH 执行...")
-                return run_remote_ssh_command(command_str, timeout, input_data, allow_retry_on_ip_change=False)
+                return run_remote_ssh_command(command_str, timeout, input_data, allow_retry_on_ip_change=False, server_config=server_config)
 
         output = (res.stdout or "") + ("\n" + res.stderr if res.stderr else "")
         return res.returncode, output.strip()
     except subprocess.TimeoutExpired as e:
         if allow_retry_on_ip_change and ssh_cfg.get("raw_host"):
-            logger.warning(f"远程 SSH 执行超时，检查目标 IP 是否已变更...")
-            new_ip = resolve_target_host(ssh_cfg["raw_host"], force_refresh=True)
+            logger.warning("远程 SSH 执行超时，检查目标 IP 是否已变更...")
+            new_ip = resolve_target_host(ssh_cfg["raw_host"], force_refresh=True, server_config=server_config)
             if new_ip and new_ip != ssh_cfg["host"]:
                 logger.info(f"检测到目标 IP 已变更 ({ssh_cfg['host']} -> {new_ip})，正在自动重试 SSH 执行...")
-                return run_remote_ssh_command(command_str, timeout, input_data, allow_retry_on_ip_change=False)
+                return run_remote_ssh_command(command_str, timeout, input_data, allow_retry_on_ip_change=False, server_config=server_config)
 
         msg = f"远程 SSH 执行超时（{timeout}秒，目标: {ssh_cfg['host']}:{ssh_cfg['port']}）"
         logger.warning(msg)
@@ -197,13 +201,13 @@ def run_remote_ssh_command(
         raise RuntimeError(msg) from e
 
 
-def test_remote_ssh_connectivity(force_refresh: bool = False) -> Tuple[bool, str, float]:
+def test_remote_ssh_connectivity(force_refresh: bool = False, server_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, float]:
     """Test SSH connectivity and return (success, resolved_ip, rtt_ms)."""
-    ssh_cfg = get_ssh_config(force_refresh=force_refresh)
+    ssh_cfg = get_ssh_config(force_refresh=force_refresh, server_config=server_config)
     target_ip = ssh_cfg["host"]
     start = time.monotonic()
     try:
-        code, out = run_remote_ssh_command("echo __SSH_OK__", timeout=10)
+        code, out = run_remote_ssh_command("echo __SSH_OK__", timeout=10, server_config=server_config)
         elapsed_ms = (time.monotonic() - start) * 1000.0
         if code == 0 and "__SSH_OK__" in out:
             return True, target_ip, round(elapsed_ms, 1)

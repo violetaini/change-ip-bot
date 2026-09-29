@@ -5,10 +5,12 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import re
 import datetime as dt
 from datetime import time as datetime_time
 from pathlib import Path
+from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 from telegram import (
@@ -31,9 +33,9 @@ from telegram.ext import (
     filters,
 )
 
-from config import config
-from handlers.ip_change import change_ip_handler
-from handlers.ip_check import check_ip_status
+from config import config, get_server_config, get_servers, is_multi_server_mode
+from handlers.ip_change import change_ip_handler, do_change_single_server
+from handlers.ip_check import check_ip_status, do_check_single_server
 from handlers.ip_quality import (
     crop_report_area,
     extract_svg_url,
@@ -43,10 +45,15 @@ from handlers.ip_quality import (
     run_quality_command,
 )
 from handlers.ping import ping_handler
+from handlers.server_selection import resolve_target_server
 from handlers.speedtest import speedtest_callback, speedtest_handler
 from handlers.stream_check import stream_check_handler
 from handlers.user_check import check_super_admin_permission, check_user_permission
-from services.ip_change_service import perform_ip_change, persist_result_for_notification
+from services.ip_change_service import (
+    build_result_message,
+    perform_ip_change,
+    persist_result_for_notification,
+)
 from services.dns_update_service import (
     SUPPORTED_DNS_PROVIDERS,
     get_dns_provider_name,
@@ -56,11 +63,15 @@ from services.dns_update_service import (
 from utils.logger import logger
 from utils.system_deps import ensure_system_dependencies, get_system_dependency_status
 from utils.state import (
+    get_all_pending_notifications,
     get_last_change_time,
     get_pending_notification,
+    get_user_selected_server,
+    load_server_state,
     load_state,
     mark_notification_sent,
     mark_sending_notify,
+    set_user_selected_server,
 )
 from utils.network import call_boil_get_ip, get_current_ip
 from utils.redact import redact_text
@@ -72,6 +83,8 @@ INVISIBLE_MESSAGE_TEXT = "\u2063"
 
 BOT_COMMANDS = [
     BotCommand("start", "显示帮助和可用命令"),
+    BotCommand("servers", "查看所有服务器状态看板"),
+    BotCommand("use", "切换当前默认操作服务器"),
     BotCommand("check", "检查当前IP状态"),
     BotCommand("change", "更换IP并同步DNS"),
     BotCommand("ip_status", "查看换IP配置与冷却状态"),
@@ -144,8 +157,8 @@ def persist_config_value(key: str, value) -> None:
     temp_path.replace(path)
 
 
-def parse_auto_change_time() -> datetime_time:
-    raw_time = str(config.get("auto_change_time", "04:00")).strip()
+def parse_auto_change_time(raw_val: Optional[str] = None) -> datetime_time:
+    raw_time = str(raw_val if raw_val is not None else config.get("auto_change_time", "04:00")).strip()
     try:
         hour_text, minute_text = raw_time.split(":", 1)
         hour = int(hour_text)
@@ -191,49 +204,68 @@ class VPSChangeIPBot:
         if not await check_user_permission(update):
             return
 
+        is_multi = is_multi_server_mode()
+        server_help = ""
+        if is_multi:
+            server_help = (
+                "/servers - 查看所有服务器状态看板\n"
+                "/use [节点] - 切换当前默认操作服务器\n"
+            )
+
         await update.message.reply_text(
-            "欢迎使用 VPS IP 更换工具\n"
-            "/start - 显示帮助\n"
-            "/check - 检查当前IP状态\n"
-            "/change - 更换IP并同步DNS\n"
-            "/ip_status - 查看换IP配置与冷却状态\n"
-            "/set_ip_mode - 切换换IP模式(通用/Fachost/Boil)（超级管理员）\n"
-            "/set_boil_token TOKEN - 设置Boil API Token（超级管理员）\n"
-            "/set_ip_api URL - 设置换IP接口URL（超级管理员）\n"
+            "欢迎使用 VPS IP 更换与网络运维工具\n\n"
+            "【节点管理】\n"
+            f"{server_help}"
+            "/check [节点/all] - 检查当前IP与境内连通性\n"
+            "/change [节点/all] - 更换IP并同步DNS\n"
+            "/ip_status [节点/all] - 查看换IP配置与冷却状态\n\n"
+            "【网络诊断】\n"
+            "/quality [节点] [-4/-6] - 检测IP质量并生成JPG报告\n"
+            "/stream [节点] - 检测流媒体解锁并发送简报\n"
+            "/ping [节点] [-4/-6] [目标] [-c 次数] - 测试网络延迟Ping\n"
+            "/speedtest [节点] - Ookla网络速度测速\n\n"
+            "【定时与运维】\n"
+            "/health - 检查机器人及节点运行状态\n"
+            "/auto_status - 查看自动换IP定时状态\n"
             "/auto_start - 启用自动换IP（超级管理员）\n"
             "/auto_stop - 关闭自动换IP（超级管理员）\n"
-            "/auto_status - 查看自动换IP状态\n"
-            "/set_auto_time HH:MM - 设置自动换IP时间（超级管理员）\n"
-            "/manage_users - 管理管理员用户（超级管理员）\n"
-            "/logs - 查看最近运行日志（超级管理员）\n"
-            "/health - 检查机器人运行状态\n"
-            "/dns_status - 查看DNS更新配置（超级管理员）\n"
-            "/set_dns_provider PROVIDER - 设置DNS服务商（超级管理员）\n"
-            "/set_dns_record ZONE RECORD [TYPE] [TTL] - 设置DNS解析记录（超级管理员）\n"
-            "/dns_update_on - 启用DNS更新（超级管理员）\n"
-            "/dns_update_off - 关闭DNS更新（超级管理员）\n"
-            "/quality - 检测IP质量并发送JPG报告\n"
-            "/stream - 检测流媒体解锁并发送简报\n"
-            "/ping [-4/-6] [目标] [-c 次数] - 测试网络延迟（支持IPv4/IPv6）\n"
-            "/speedtest - 测试网络速度"
+            "/set_auto_time HH:MM - 设置自动换IP时间（超级管理员）\n\n"
+            "【系统与DNS配置（超级管理员）】\n"
+            "/dns_status - 查看DNS更新配置\n"
+            "/set_dns_provider PROVIDER - 设置DNS服务商\n"
+            "/set_dns_record ZONE RECORD [TYPE] [TTL] - 设置DNS解析记录\n"
+            "/dns_update_on / /dns_update_off - 启闭DNS更新\n"
+            "/set_ip_mode - 切换换IP模式(通用/Fachost/Boil)\n"
+            "/set_boil_token TOKEN - 设置Boil API Token\n"
+            "/set_ip_api URL - 设置换IP接口URL\n"
+            "/manage_users - 管理管理员用户\n"
+            "/logs - 查看最近运行日志"
         )
 
     async def auto_change_job(self, context: ContextTypes.DEFAULT_TYPE):
-        logger.info("开始执行自动换IP任务")
-        retry_count = int(config.get("auto_change_retry_count", 5))
-        retry_delay = int(config.get("auto_change_retry_delay_seconds", 60))
+        job_data = context.job.data if context.job and isinstance(context.job.data, dict) else {}
+        server_id = job_data.get("server_id")
+        server_cfg = get_server_config(server_id) if server_id else None
+
+        sid = server_cfg.get("id", "default") if server_cfg else "default"
+        sname = server_cfg.get("name", sid) if server_cfg else sid
+        logger.info(f"开始执行【{sname}】({sid}) 自动换IP任务")
+
+        cfg = server_cfg if server_cfg is not None else config
+        retry_count = int(cfg.get("auto_change_retry_count", 5))
+        retry_delay = int(cfg.get("auto_change_retry_delay_seconds", 60))
         max_attempts = max(1, retry_count + 1)
         result = None
 
         for attempt in range(1, max_attempts + 1):
-            result = await perform_ip_change(trigger="auto")
+            result = await perform_ip_change(trigger="auto", server_config=server_cfg)
             if result.success:
                 if attempt > 1:
                     result.message = f"{result.message}；自动重试第 {attempt - 1} 次后成功"
                 break
 
             logger.warning(
-                f"自动换IP第 {attempt}/{max_attempts} 次失败: "
+                f"【{sname}】自动换IP第 {attempt}/{max_attempts} 次失败: "
                 f"status={result.status}, message={result.message}"
             )
             if attempt < max_attempts:
@@ -242,18 +274,18 @@ class VPSChangeIPBot:
         if result and not result.success and max_attempts > 1:
             result.message = f"{result.message}；已尝试 {max_attempts} 次，仍未成功"
 
-        if not config.get("auto_change_notify", True):
+        if not cfg.get("auto_change_notify", True):
             return
 
-        chat_ids = [x.strip() for x in str(config["telegram_chat_id"]).split(",") if x.strip()]
+        chat_ids = [x.strip() for x in str(cfg.get("telegram_chat_id", config.get("telegram_chat_id", ""))).split(",") if x.strip()]
         if not chat_ids:
             return
 
         await self.send_change_result_notifications(context, result, chat_ids)
 
         if result and result.success:
-            await self.send_dns_verify_report(context, chat_ids, result.new_ip)
-            await self.send_auto_quality_report(context, chat_ids)
+            await self.send_dns_verify_report(context, chat_ids, result.new_ip, server_config=server_cfg)
+            await self.send_auto_quality_report(context, chat_ids, server_config=server_cfg)
 
     async def send_change_result_notifications(
         self,
@@ -275,52 +307,65 @@ class VPSChangeIPBot:
                 failed_chat_ids.append(chat_id)
                 logger.warning(f"发送自动换IP结果通知失败，将等待恢复后补发: chat_id={chat_id}, error={e}")
 
+        sid = getattr(result, "server_id", "default")
         if failed_chat_ids:
             await persist_result_for_notification(result, chat_id=failed_chat_ids[0])
         else:
-            mark_notification_sent()
+            mark_notification_sent(server_id=sid)
 
     async def try_send_pending_notifications(self, context: ContextTypes.DEFAULT_TYPE):
-        pending = get_pending_notification()
-        if not pending:
-            return
-        if pending.get("sending_notify"):
+        pending_list = get_all_pending_notifications()
+        if not pending_list:
             return
 
-        chat_id = pending.get("last_chat_id") or str(config.get("telegram_chat_id", "")).split(",")[0].strip()
-        message = pending.get("last_message", "")
-        if not chat_id or not message:
+        for sid, pending in pending_list:
+            if pending.get("sending_notify"):
+                continue
+
+            chat_id = pending.get("last_chat_id") or str(config.get("telegram_chat_id", "")).split(",")[0].strip()
+            message = pending.get("last_message", "")
+            if not chat_id or not message:
+                continue
+
+            try:
+                mark_sending_notify(True, server_id=sid)
+                await context.bot.send_message(chat_id=chat_id, text=message)
+                mark_notification_sent(server_id=sid)
+                logger.info(f"已补发【{sid}】上次未送达的换IP结果通知")
+            except Exception as e:
+                mark_sending_notify(False, server_id=sid)
+                logger.warning(f"补发【{sid}】换IP结果通知失败，稍后重试: {e}")
+
+    async def send_dns_verify_report(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_ids: list[str],
+        target_ip: str,
+        server_config: Optional[Dict[str, Any]] = None,
+    ):
+        cfg = server_config if server_config is not None else config
+        sid = cfg.get("id", "default")
+        sname = cfg.get("name", sid)
+        if not cfg.get("dns_verify_enabled", True):
+            return
+        if not is_dns_update_enabled(server_config=cfg):
             return
 
-        try:
-            mark_sending_notify(True)
-            await context.bot.send_message(chat_id=chat_id, text=message)
-            mark_notification_sent()
-            logger.info("已补发上次未送达的换IP结果通知")
-        except Exception as e:
-            mark_sending_notify(False)
-            logger.warning(f"补发换IP结果通知失败，稍后重试: {e}")
-
-    async def send_dns_verify_report(self, context: ContextTypes.DEFAULT_TYPE, chat_ids: list[str], target_ip: str):
-        if not config.get("dns_verify_enabled", True):
-            return
-        if not is_dns_update_enabled():
-            return
-
-        record_name = get_dns_record_name().strip().rstrip(".")
+        record_name = get_dns_record_name(server_config=cfg).strip().rstrip(".")
         if not record_name or not target_ip:
             return
 
-        delay = int(config.get("dns_verify_delay_seconds", 60))
-        retry_count = int(config.get("dns_verify_retry_count", 10))
+        delay = int(cfg.get("dns_verify_delay_seconds", 60))
+        retry_count = int(cfg.get("dns_verify_retry_count", 10))
 
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
         for attempt in range(1, retry_count + 1):
             await asyncio.sleep(max(1, delay))
             try:
                 records = await asyncio.to_thread(resolve_ipv4_records, record_name)
                 if target_ip in records:
                     text = (
-                        "DNS解析已生效\n"
+                        f"{prefix}DNS解析已生效\n"
                         f"域名: {record_name}\n"
                         f"目标IP: {target_ip}\n"
                         f"当前解析: {', '.join(records)}\n"
@@ -331,15 +376,15 @@ class VPSChangeIPBot:
                     return
 
                 logger.info(
-                    f"DNS解析暂未生效: {record_name}, target={target_ip}, "
+                    f"{prefix}DNS解析暂未生效: {record_name}, target={target_ip}, "
                     f"records={records}, attempt={attempt}/{retry_count}"
                 )
             except Exception as e:
                 records = []
-                logger.warning(f"DNS解析检查失败: {e}")
+                logger.warning(f"{prefix}DNS解析检查失败: {e}")
 
         text = (
-            "DNS解析暂未确认生效\n"
+            f"{prefix}DNS解析暂未确认生效\n"
             f"域名: {record_name}\n"
             f"目标IP: {target_ip}\n"
             f"最后解析: {', '.join(records) if records else '未获取到A记录'}\n"
@@ -348,22 +393,31 @@ class VPSChangeIPBot:
         for chat_id in chat_ids:
             await context.bot.send_message(chat_id=chat_id, text=text)
 
-    async def send_auto_quality_report(self, context: ContextTypes.DEFAULT_TYPE, chat_ids: list[str]):
-        if not config.get("auto_change_quality_report", True):
+    async def send_auto_quality_report(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_ids: list[str],
+        server_config: Optional[Dict[str, Any]] = None,
+    ):
+        cfg = server_config if server_config is not None else config
+        sid = cfg.get("id", "default")
+        sname = cfg.get("name", sid)
+        if not cfg.get("auto_change_quality_report", True):
             return
-        if not config.get("ip_quality_enabled", True):
+        if not cfg.get("ip_quality_enabled", True):
             return
 
         tmp_dir = None
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
         try:
-            quality_cmd = str(config.get("ip_quality_cmd") or "").strip()
-            return_code, output = await asyncio.to_thread(run_quality_command, quality_cmd)
-            logger.info(f"自动IP质量检测命令返回码: {return_code}")
+            quality_cmd = str(cfg.get("ip_quality_cmd") or "").strip()
+            return_code, output = await asyncio.to_thread(run_quality_command, quality_cmd, server_config=cfg)
+            logger.info(f"{prefix}自动IP质量检测命令返回码: {return_code}")
 
             svg_urls = extract_svg_urls(output)
             if not svg_urls:
                 text = (
-                    "自动IP质量检测完成，但没有识别到SVG链接。\n"
+                    f"{prefix}自动IP质量检测完成，但没有识别到SVG链接。\n"
                     f"命令返回码: {return_code}\n\n"
                     f"最近输出:\n{redact_text((output or '无输出')[-1500:])}"
                 )
@@ -385,7 +439,7 @@ class VPSChangeIPBot:
                     await asyncio.to_thread(crop_report_area, png_path, jpg_path)
                     successful_items.append({"label": label, "jpg_path": jpg_path, "url": svg_url})
                 except Exception as render_err:
-                    logger.warning(f"自动IP质量图片渲染失败 ({label}): {render_err}")
+                    logger.warning(f"{prefix}自动IP质量图片渲染失败 ({label}): {render_err}")
                     failed_items.append({"label": label, "error": str(render_err), "url": svg_url})
 
             from telegram import InputMediaPhoto
@@ -396,7 +450,7 @@ class VPSChangeIPBot:
                         await context.bot.send_photo(
                             chat_id=chat_id,
                             photo=f,
-                            caption=f"自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
+                            caption=f"{prefix}自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
                         )
                 elif len(successful_items) > 1:
                     files_to_close = []
@@ -407,17 +461,17 @@ class VPSChangeIPBot:
                             files_to_close.append(f)
                             media.append(InputMediaPhoto(
                                 media=f,
-                                caption=f"自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
+                                caption=f"{prefix}自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
                             ))
                         await context.bot.send_media_group(chat_id=chat_id, media=media)
                     except Exception as mg_err:
-                        logger.warning(f"自动换IP报告媒体组发送失败，降级为单张发送: {mg_err}")
+                        logger.warning(f"{prefix}自动换IP报告媒体组发送失败，降级为单张发送: {mg_err}")
                         for item in successful_items:
                             with open(item["jpg_path"], "rb") as f:
                                 await context.bot.send_photo(
                                     chat_id=chat_id,
                                     photo=f,
-                                    caption=f"自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
+                                    caption=f"{prefix}自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
                                 )
                     finally:
                         for f in files_to_close:
@@ -429,12 +483,12 @@ class VPSChangeIPBot:
                 for item in failed_items:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"自动换IP成功，【{item['label']}】图片渲染失败，可直接点击查看报告：\n🔗 {item['url']}",
+                        text=f"{prefix}自动换IP成功，【{item['label']}】图片渲染失败，可直接点击查看报告：\n🔗 {item['url']}",
                     )
         except Exception as e:
-            logger.exception(f"自动IP质量检测失败: {e}")
+            logger.exception(f"{prefix}自动IP质量检测失败: {e}")
             for chat_id in chat_ids:
-                await context.bot.send_message(chat_id=chat_id, text=f"自动IP质量检测失败：{redact_text(str(e))}")
+                await context.bot.send_message(chat_id=chat_id, text=f"{prefix}自动IP质量检测失败：{redact_text(str(e))}")
         finally:
             if tmp_dir and os.path.isdir(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -480,30 +534,70 @@ class VPSChangeIPBot:
     def get_auto_change_jobs(self):
         if not self.app or not self.app.job_queue:
             return []
-        return self.app.job_queue.get_jobs_by_name(AUTO_CHANGE_JOB_NAME)
+        jobs = []
+        for job in self.app.job_queue.jobs():
+            if job.name and job.name.startswith(AUTO_CHANGE_JOB_NAME):
+                jobs.append(job)
+        return jobs
 
     def schedule_auto_change_job(self) -> bool:
         if not self.app or not self.app.job_queue:
             logger.warning("JobQueue 不可用，请确认安装了 python-telegram-bot[job-queue]")
             return False
 
-        try:
-            run_time = parse_auto_change_time()
-        except ValueError as e:
-            logger.warning(str(e))
-            return False
+        servers = get_servers()
+        if not is_multi_server_mode():
+            try:
+                run_time = parse_auto_change_time()
+            except ValueError as e:
+                logger.warning(str(e))
+                return False
 
-        if self.get_auto_change_jobs():
-            logger.info("自动换IP任务已存在，跳过重复注册")
+            if self.get_auto_change_jobs():
+                logger.info("自动换IP任务已存在，跳过重复注册")
+                return True
+
+            self.app.job_queue.run_daily(
+                self.auto_change_job,
+                time=run_time,
+                name=AUTO_CHANGE_JOB_NAME,
+                data={"server_id": servers[0].get("id", "default")},
+            )
+            logger.info(f"自动换IP任务已注册，每天北京时间 {run_time.strftime('%H:%M')} 执行一次")
             return True
 
-        self.app.job_queue.run_daily(
-            self.auto_change_job,
-            time=run_time,
-            name=AUTO_CHANGE_JOB_NAME,
-        )
-        logger.info(f"自动换IP任务已注册，每天北京时间 {run_time.strftime('%H:%M')} 执行一次")
-        return True
+        scheduled_count = 0
+        for s in servers:
+            sid = s.get("id", "default")
+            sname = s.get("name") or sid
+            s_enabled = s.get("auto_change_enabled", config.get("auto_change_enabled", True))
+            if not s_enabled:
+                logger.info(f"服务器【{sname}】({sid}) 未启用自动换IP，跳过注册")
+                continue
+
+            raw_time = str(s.get("auto_change_time") or config.get("auto_change_time", "04:00")).strip()
+            try:
+                run_time = parse_auto_change_time(raw_time)
+            except ValueError as e:
+                logger.warning(f"服务器【{sname}】({sid}) 自动换IP时间配置无效: {e}")
+                continue
+
+            job_name = f"{AUTO_CHANGE_JOB_NAME}_{sid}"
+            existing = self.app.job_queue.get_jobs_by_name(job_name)
+            if existing:
+                logger.info(f"服务器【{sname}】({sid}) 定时任务已存在，跳过重复注册")
+                continue
+
+            self.app.job_queue.run_daily(
+                self.auto_change_job,
+                time=run_time,
+                name=job_name,
+                data={"server_id": sid},
+            )
+            logger.info(f"服务器【{sname}】({sid}) 自动换IP任务已注册，每天北京时间 {run_time.strftime('%H:%M')} 执行一次")
+            scheduled_count += 1
+
+        return scheduled_count > 0
 
     def cancel_auto_change_jobs(self) -> int:
         jobs = self.get_auto_change_jobs()
@@ -530,7 +624,7 @@ class VPSChangeIPBot:
             run_time = parse_auto_change_time()
             await update.message.reply_text(f"已启用自动换IP，每天北京时间 {run_time.strftime('%H:%M')} 执行一次。")
         else:
-            await update.message.reply_text("已写入启用配置，但当前 JobQueue 不可用，未注册定时任务。")
+            await update.message.reply_text("已写入启用配置，但未成功注册定时任务（请检查 JobQueue 或时间配置）。")
 
     async def auto_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -556,13 +650,24 @@ class VPSChangeIPBot:
         auto_time = str(config.get("auto_change_time", "04:00")).strip()
         retry_count = int(config.get("auto_change_retry_count", 5))
         retry_delay = int(config.get("auto_change_retry_delay_seconds", 60))
-        await update.message.reply_text(
-            "自动换IP状态\n"
-            f"配置状态: {'已启用' if enabled else '已关闭'}\n"
-            f"定时任务: {'运行中' if jobs else '未注册'}\n"
-            f"执行时间: 每天北京时间 {auto_time}\n"
-            f"失败重试: 最多 {retry_count} 次，间隔 {retry_delay} 秒"
-        )
+        lines = [
+            "自动换IP状态",
+            f"全局配置: {'已启用' if enabled else '已关闭'}",
+            f"定时任务: {'运行中 (' + str(len(jobs)) + ' 个任务)' if jobs else '未注册'}",
+            f"全局时间: 每天北京时间 {auto_time}",
+            f"失败重试: 最多 {retry_count} 次，间隔 {retry_delay} 秒",
+        ]
+        if is_multi_server_mode():
+            servers = get_servers()
+            lines.append(f"\n【受管节点列表 (共 {len(servers)} 个)】")
+            for s in servers:
+                sid = s.get("id", "default")
+                sname = s.get("name") or sid
+                s_en = s.get("auto_change_enabled", enabled)
+                s_time = s.get("auto_change_time", auto_time)
+                lines.append(f"• {s_name} ({sid}): {'已启用' if s_en else '已关闭'} (时间: {s_time})")
+
+        await update.message.reply_text("\n".join(lines))
 
     async def set_auto_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1027,52 +1132,75 @@ class VPSChangeIPBot:
         if not await check_user_permission(update):
             return
 
-        provider = str(config.get("ip_change_provider", "generic")).strip().lower()
-        if provider == "boil":
-            mode_name = "Boil Network 住宅模式"
-        elif provider in ("fachost", "classic"):
-            mode_name = "Fachost 专用模式 (解析响应 JSON)"
-        else:
-            mode_name = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
-        lines = [f"换IP当前模式: {mode_name} ({provider})"]
+        server_cfg, is_all, prompt_shown = await resolve_target_server(update, context, "ip_status", allow_all=True)
+        if prompt_shown:
+            return
 
-        state = load_state()
-        if provider == "boil":
-            token = str(config.get("boil_api_token", "")).strip()
-            lines.append(f"Boil Token: {'已配置' if token else '未配置'}")
-            base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
-            lines.append(f"Boil 接口地址: {base_url}")
-            if token:
-                try:
-                    curr_boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 10)
-                    lines.append(f"当前住宅IP: {curr_boil_ip}")
-                except Exception as e:
-                    lines.append(f"当前住宅IP: 获取失败 ({e})")
+        msg = update.message or (update.callback_query.message if update.callback_query else None)
+        if not msg:
+            return
 
-            uses_left = state.get("boil_uses_left", -1)
-            lines.append(f"今日剩余配额: {uses_left if uses_left >= 0 else '暂无缓存（将在换IP后更新）'}")
-
-            next_allowed_at = float(state.get("boil_next_allowed_at", 0) or 0)
-            now = time.time()
-            if now < next_allowed_at:
-                wait_sec = max(1, int(next_allowed_at - now))
-                next_time_str = dt.datetime.fromtimestamp(next_allowed_at).strftime("%H:%M:%S")
-                lines.append(f"冷却状态: 冷却中，还需等待 {wait_sec} 秒（预计可用: {next_time_str}）")
+        async def _format_single(cfg: Dict[str, Any]) -> str:
+            sid = str(cfg.get("id") or "default").strip()
+            sname = str(cfg.get("name") or sid).strip()
+            provider = str(cfg.get("ip_change_provider", "generic")).strip().lower()
+            if provider == "boil":
+                mode_name = "Boil Network 住宅模式"
+            elif provider in ("fachost", "classic"):
+                mode_name = "Fachost 专用模式 (解析响应 JSON)"
             else:
-                lines.append("冷却状态: 就绪（当前无限制）")
+                mode_name = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
+            lines = [f"【{sname} ({sid}) 换IP配置与状态】", f"- 换IP模式: {mode_name} ({provider})"]
+
+            state = load_server_state(sid)
+            if provider == "boil":
+                token = str(cfg.get("boil_api_token", "")).strip()
+                lines.append(f"- Boil Token: {'已配置' if token else '未配置'}")
+                base_url = str(cfg.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
+                lines.append(f"- Boil 接口地址: {base_url}")
+                if token:
+                    try:
+                        curr_boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 10)
+                        lines.append(f"- 当前住宅IP: {curr_boil_ip}")
+                    except Exception as e:
+                        lines.append(f"- 当前住宅IP: 获取失败 ({e})")
+
+                uses_left = state.get("boil_uses_left", -1)
+                lines.append(f"- 今日剩余配额: {uses_left if uses_left >= 0 else '暂无缓存（将在换IP后更新）'}")
+
+                next_allowed_at = float(state.get("boil_next_allowed_at", 0) or 0)
+                now = time.time()
+                if now < next_allowed_at:
+                    wait_sec = max(1, int(next_allowed_at - now))
+                    next_time_str = dt.datetime.fromtimestamp(next_allowed_at).strftime("%H:%M:%S")
+                    lines.append(f"- 冷却状态: 冷却中，还需等待 {wait_sec} 秒（预计可用: {next_time_str}）")
+                else:
+                    lines.append("- 冷却状态: 就绪（当前无限制）")
+            else:
+                api_url = str(cfg.get("ip_change_api", "")).strip()
+                lines.append(f"- 换IP接口URL: {'已配置' if api_url else '未配置'}")
+                interval = int(cfg.get("ip_change_interval", 2))
+                lines.append(f"- 最小更换间隔: {interval} 分钟")
+
+            last_time = get_last_change_time(server_id=sid)
+            if last_time:
+                last_dt = dt.datetime.fromtimestamp(last_time).strftime("%Y-%m-%d %H:%M:%S")
+                lines.append(f"- 上次更换时间: {last_dt}")
+                lines.append(f"- 上次更换结果: {state.get('last_change_status') or '无'}")
+            return "\n".join(lines)
+
+        if is_all:
+            servers = get_servers()
+            tasks = [_format_single(s) for s in servers]
+            results = await asyncio.gather(*tasks)
+            await msg.reply_text("🌐【所有服务器换IP配置与冷却状态】\n\n" + "\n\n".join(results))
         else:
-            api_url = str(config.get("ip_change_api", "")).strip()
-            lines.append(f"换IP接口URL: {'已配置' if api_url else '未配置'}")
-            interval = int(config.get("ip_change_interval", 2))
-            lines.append(f"最小更换间隔: {interval} 分钟")
-
-        last_time = get_last_change_time()
-        if last_time:
-            last_dt = dt.datetime.fromtimestamp(last_time).strftime("%Y-%m-%d %H:%M:%S")
-            lines.append(f"上次更换时间: {last_dt}")
-            lines.append(f"上次更换结果: {state.get('last_change_status') or '无'}")
-
-        await update.message.reply_text("【换IP状态与配置】\n" + "\n".join(f"- {line}" for line in lines))
+            res_text = await _format_single(server_cfg)
+            hint = ""
+            if is_multi_server_mode():
+                sname = server_cfg.get("name", server_cfg.get("id"))
+                hint = f"\n\n💡 提示: 当前操作服务器为 [{sname}]，输入 /servers 查看列表，/use 切换"
+            await msg.reply_text(res_text + hint)
 
     async def set_ip_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1195,25 +1323,156 @@ class VPSChangeIPBot:
             logger.exception(f"保存 IP API URL 失败: {e}")
             await update.message.reply_text(f"保存 IP API URL 失败: {redact_text(str(e))}")
 
+    async def servers_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        user_id = update.effective_user.id if update.effective_user else 0
+        servers = get_servers()
+        selected_sid = get_user_selected_server(user_id) or servers[0].get("id", "default")
+
+        lines = [f"🌐【服务器节点看板】(共 {len(servers)} 个节点)\n"]
+        for idx, s in enumerate(servers, 1):
+            sid = s.get("id", "default")
+            sname = s.get("name") or sid
+            provider = str(s.get("ip_change_provider") or "generic").strip().lower()
+            if provider == "boil":
+                mode_str = "Boil Network 住宅模式"
+            elif provider in ("fachost", "classic"):
+                mode_str = "Fachost 专用模式"
+            else:
+                mode_str = "通用 API 模式"
+
+            ssh_enabled = bool(s.get("remote_ssh_enabled"))
+            ssh_host = str(s.get("remote_ssh_host") or "").strip()
+            ssh_str = f"已启用 ({ssh_host})" if ssh_enabled else "未启用 (本地机房)"
+
+            dns_on = bool(s.get("dns_update_enabled"))
+            dns_rec = str(s.get("dns_record_name") or s.get("huawei_dns_record_name", "")).strip()
+            dns_str = f"已启用 ({dns_rec})" if (dns_on and dns_rec) else "未启用"
+
+            s_state = load_server_state(sid)
+            last_change = s_state.get("last_change_time")
+            last_dt_str = dt.datetime.fromtimestamp(last_change).strftime("%m-%d %H:%M") if last_change else "无记录"
+            last_st = s_state.get("last_change_status") or "未知"
+
+            current_mark = " 👉 [当前默认]" if sid == selected_sid else ""
+            lines.append(
+                f"{idx}. 🏷️ 【{sname}】 (ID: `{sid}`){current_mark}\n"
+                f"   • 换IP模式: {mode_str}\n"
+                f"   • 远程SSH: {ssh_str}\n"
+                f"   • DNS同步: {dns_str}\n"
+                f"   • 上次换IP: {last_dt_str} ({last_st})"
+            )
+
+        keyboard = []
+        if len(servers) > 1:
+            switch_btns = []
+            for s in servers:
+                sid = s.get("id", "default")
+                sname = s.get("name") or sid
+                label = f"设为默认: {sname}" if sid != selected_sid else f"✅ {sname}"
+                switch_btns.append(InlineKeyboardButton(label, callback_data=f"srv_act:use:{sid}"))
+                if len(switch_btns) == 2:
+                    keyboard.append(switch_btns)
+                    switch_btns = []
+            if switch_btns:
+                keyboard.append(switch_btns)
+
+            keyboard.append([
+                InlineKeyboardButton("🌐 全部检测 (/check all)", callback_data="srv_act:check:all"),
+                InlineKeyboardButton("🔄 全部换IP (/change all)", callback_data="srv_act:change:all"),
+            ])
+
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        msg = update.message or (update.callback_query.message if update.callback_query else None)
+        if msg:
+            await msg.reply_text("\n\n".join(lines), reply_markup=reply_markup, parse_mode="Markdown")
+
+    async def use_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        user_id = update.effective_user.id if update.effective_user else 0
+        servers = get_servers()
+
+        if context.args:
+            target = context.args[0].strip().lower()
+            matched = get_server_config(target)
+            if not matched:
+                avail = ", ".join([f"`{s['id']}`" for s in servers])
+                await update.message.reply_text(f"❌ 未找到 ID 为 `{target}` 的服务器。\n可用服务器 ID: {avail}", parse_mode="Markdown")
+                return
+            set_user_selected_server(user_id, matched["id"])
+            await update.message.reply_text(f"✅ 已将当前默认操作服务器切换为: 【{matched.get('name', matched['id'])}】 (`{matched['id']}`)", parse_mode="Markdown")
+            return
+
+        keyboard = []
+        row = []
+        current_sid = get_user_selected_server(user_id) or servers[0].get("id", "default")
+        for s in servers:
+            sid = s.get("id", "default")
+            sname = s.get("name") or sid
+            prefix = "✅ " if sid == current_sid else ""
+            row.append(InlineKeyboardButton(f"{prefix}{sname}", callback_data=f"srv_act:use:{sid}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        await update.message.reply_text("请选择要切换的默认操作服务器：", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def server_action_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+        data = query.data or ""
+        parts = data.split(":", 2)
+        if len(parts) < 3:
+            return
+
+        cmd = parts[1].strip()
+        target = parts[2].strip()
+        user_id = update.effective_user.id if update.effective_user else 0
+
+        if cmd == "cancel":
+            await query.edit_message_text("已取消操作。")
+            return
+
+        if cmd == "use":
+            matched = get_server_config(target)
+            if matched:
+                set_user_selected_server(user_id, matched["id"])
+                sname = matched.get("name", matched["id"])
+                await query.edit_message_text(f"✅ 已将默认操作服务器切换为: 【{sname}】 (`{matched['id']}`)", parse_mode="Markdown")
+            else:
+                await query.edit_message_text(f"❌ 切换失败，未找到节点: {target}")
+            return
+
+        context.args = [target]
+        if cmd == "check":
+            await check_ip_status(update, context)
+        elif cmd == "change":
+            await change_ip_handler(update, context)
+        elif cmd == "quality":
+            await ip_quality_handler(update, context)
+        elif cmd == "stream":
+            await stream_check_handler(update, context)
+        elif cmd == "speedtest":
+            await speedtest_handler(update, context)
+        elif cmd == "ping":
+            await ping_handler(update, context)
+        elif cmd == "ip_status":
+            await self.ip_status(update, context)
+
     async def health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
             return
 
         checks = []
-
-        try:
-            current_ip = await asyncio.to_thread(get_current_ip)
-            checks.append(f"公网IP: {current_ip}")
-        except Exception as e:
-            checks.append(f"公网IP: 获取失败 ({e})")
-
-        ip_provider = str(config.get("ip_change_provider", "classic")).strip().lower()
-        if ip_provider == "boil":
-            token_set = bool(str(config.get("boil_api_token", "")).strip())
-            checks.append(f"换IP模式: Boil Network ({'Token已配置' if token_set else 'Token未配置'})")
-        else:
-            api_set = bool(str(config.get("ip_change_api", "")).strip())
-            checks.append(f"换IP模式: 经典模式 ({'API已配置' if api_set else 'API未配置'})")
         checks.append(f"自动换IP: {'已启用' if config.get('auto_change_enabled') else '已关闭'}")
         checks.append(f"自动时间: 每天北京时间 {config.get('auto_change_time', '04:00')}")
         checks.append(
@@ -1221,16 +1480,6 @@ class VPSChangeIPBot:
             f"最多 {int(config.get('auto_change_retry_count', 5))} 次，"
             f"间隔 {int(config.get('auto_change_retry_delay_seconds', 60))} 秒"
         )
-        dns_provider = get_dns_provider_name() or "未配置"
-        checks.append(f"DNS更新: {'已启用' if is_dns_update_enabled() else '未启用'} ({dns_provider})")
-
-        record_name = get_dns_record_name().strip()
-        if is_dns_update_enabled() and record_name:
-            try:
-                records = await asyncio.to_thread(resolve_ipv4_records, record_name)
-                checks.append(f"DNS解析: {record_name} -> {', '.join(records) if records else '无A记录'}")
-            except Exception as e:
-                checks.append(f"DNS解析: 检查失败 ({e})")
 
         state_file = Path(str(config.get("state_file", "/var/lib/vps-ip-bot/state.json"))).expanduser()
         state_parent = state_file.parent
@@ -1257,21 +1506,77 @@ class VPSChangeIPBot:
         speedtest_cli = "可用" if shutil.which("speedtest") else "不可用"
         checks.append(f"speedtest CLI: {speedtest_cli}")
 
+        servers = get_servers()
         from utils.remote_ssh import is_remote_ssh_enabled, test_remote_ssh_connectivity, get_ssh_config
-        if is_remote_ssh_enabled():
-            cfg = get_ssh_config()
+        if not is_multi_server_mode():
+            s = servers[0]
             try:
-                ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity)
-                if ok:
-                    checks.append(f"家宽SSH连通: ✅ 正常 (目标: {target_ip}:{cfg['port']}, 延迟: {rtt}ms)")
-                else:
-                    checks.append(f"家宽SSH连通: ⚠️ 无法连通 (目标: {target_ip}:{cfg['port']})")
-            except Exception as ex:
-                checks.append(f"家宽SSH连通: ⚠️ 检测异常 ({ex})")
-        else:
-            checks.append("家宽SSH连通: 未启用 (使用机房本地环境运行)")
+                current_ip = await asyncio.to_thread(get_current_ip)
+                checks.append(f"公网IP: {current_ip}")
+            except Exception as e:
+                checks.append(f"公网IP: 获取失败 ({e})")
 
-        await update.message.reply_text("健康检查\n" + "\n".join(f"- {item}" for item in checks))
+            ip_provider = str(s.get("ip_change_provider", "generic")).strip().lower()
+            if ip_provider == "boil":
+                token_set = bool(str(s.get("boil_api_token", "")).strip())
+                checks.append(f"换IP模式: Boil Network ({'Token已配置' if token_set else 'Token未配置'})")
+            else:
+                api_set = bool(str(s.get("ip_change_api", "")).strip())
+                checks.append(f"换IP模式: 接口模式 ({'API已配置' if api_set else 'API未配置'})")
+
+            dns_provider = get_dns_provider_name(server_config=s) or "未配置"
+            checks.append(f"DNS更新: {'已启用' if is_dns_update_enabled(server_config=s) else '未启用'} ({dns_provider})")
+
+            record_name = get_dns_record_name(server_config=s).strip()
+            if is_dns_update_enabled(server_config=s) and record_name:
+                try:
+                    records = await asyncio.to_thread(resolve_ipv4_records, record_name)
+                    checks.append(f"DNS解析: {record_name} -> {', '.join(records) if records else '无A记录'}")
+                except Exception as e:
+                    checks.append(f"DNS解析: 检查失败 ({e})")
+
+            if is_remote_ssh_enabled(s):
+                ssh_c = get_ssh_config(server_config=s)
+                try:
+                    ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity, server_config=s)
+                    if ok:
+                        checks.append(f"家宽SSH连通: ✅ 正常 (目标: {target_ip}:{ssh_c['port']}, 延迟: {rtt}ms)")
+                    else:
+                        checks.append(f"家宽SSH连通: ⚠️ 无法连通 (目标: {target_ip}:{ssh_c['port']})")
+                except Exception as ex:
+                    checks.append(f"家宽SSH连通: ⚠️ 检测异常 ({ex})")
+            else:
+                checks.append("家宽SSH连通: 未启用 (使用机房本地环境运行)")
+        else:
+            checks.append(f"\n【受管服务器看板 (共 {len(servers)} 台)】")
+            for idx, s in enumerate(servers, 1):
+                sid = s.get("id", "default")
+                sname = s.get("name") or sid
+                provider = s.get("ip_change_provider", "generic")
+                node_lines = [f"{idx}. 🏷️ 【{sname}】 (`{sid}`): 模式={provider}"]
+                if is_remote_ssh_enabled(s):
+                    ssh_c = get_ssh_config(server_config=s)
+                    try:
+                        ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity, server_config=s)
+                        if ok:
+                            node_lines.append(f"   • SSH连通: ✅ 正常 ({target_ip}:{ssh_c['port']}, {rtt}ms)")
+                        else:
+                            node_lines.append(f"   • SSH连通: ⚠️ 无法连通 ({target_ip}:{ssh_c['port']})")
+                    except Exception as ex:
+                        node_lines.append(f"   • SSH连通: ⚠️ 异常 ({ex})")
+                else:
+                    node_lines.append("   • SSH连通: 未启用 (本地机房)")
+
+                if is_dns_update_enabled(server_config=s):
+                    rec = get_dns_record_name(server_config=s)
+                    node_lines.append(f"   • DNS更新: 已启用 ({rec})")
+                else:
+                    node_lines.append("   • DNS更新: 未启用")
+                checks.append("\n".join(node_lines))
+
+        msg = update.message or (update.callback_query.message if update.callback_query else None)
+        if msg:
+            await msg.reply_text("健康检查\n" + "\n".join(f"- {item}" if not item.startswith("\n") and not item.startswith("1") and not item.startswith("2") and not item.startswith("3") and not item.startswith("4") and not item.startswith("5") and not item.startswith("6") and not item.startswith("7") and not item.startswith("8") and not item.startswith("9") else item for item in checks))
 
     def setup_jobs(self):
         if self.app.job_queue:
@@ -1293,6 +1598,9 @@ class VPSChangeIPBot:
         self.app = ApplicationBuilder().token(config["telegram_bot_token"]).post_init(self.post_init).build()
 
         self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("servers", self.servers_handler))
+        self.app.add_handler(CommandHandler("nodes", self.servers_handler))
+        self.app.add_handler(CommandHandler("use", self.use_handler))
         self.app.add_handler(CommandHandler("check", check_ip_status))
         self.app.add_handler(CommandHandler("change", change_ip_handler))
         self.app.add_handler(CommandHandler("ip_status", self.ip_status))
@@ -1317,6 +1625,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("stream", stream_check_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
+        self.app.add_handler(CallbackQueryHandler(self.server_action_callback, pattern="^srv_act:"))
         self.app.add_handler(CallbackQueryHandler(self.set_ip_mode_callback, pattern="^set_ip_mode:"))
         self.app.add_handler(CallbackQueryHandler(self.manage_users_callback, pattern="^manage_users:"))
         self.app.add_handler(CallbackQueryHandler(self.remove_admin_callback, pattern="^remove_admin:"))

@@ -6,11 +6,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from typing import Any, Dict, Optional
+
 from PIL import Image
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import config
+from config import config, is_multi_server_mode
+from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
 from utils.redact import redact_text
@@ -19,11 +22,11 @@ DEFAULT_QUALITY_CMD = "bash <(curl -sL https://IP.Check.Place) -y"
 SVG_URL_RE = re.compile(r'https?://[^\s"\'<>]+\.svg(?:\?[^\s"\'<>]*)?', re.IGNORECASE)
 
 
-def run_quality_command(cmd: str) -> tuple[int, str]:
+def run_quality_command(cmd: str, server_config: Optional[Dict[str, Any]] = None) -> tuple[int, str]:
     from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
-    if is_remote_ssh_enabled():
+    if is_remote_ssh_enabled(server_config):
         logger.info("通过远程家宽 SSH 执行 IP 质量检测脚本")
-        return run_remote_ssh_command(cmd, timeout=900)
+        return run_remote_ssh_command(cmd, timeout=900, server_config=server_config)
 
     run_kwargs = {
         "shell": True,
@@ -192,10 +195,20 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("IP 质量检测未启用。")
         return
 
-    user_id = update.effective_user.id
-    user_name = update.effective_user.username
-    full_name = update.effective_user.full_name
-    logger.info(f"收到 quality 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
+    user_id = update.effective_user.id if update.effective_user else 0
+    logger.info(f"收到 quality 命令，用户ID: {user_id}")
+
+    server_cfg, is_all, prompt_shown = await resolve_target_server(update, context, "quality", allow_all=False)
+    if prompt_shown:
+        return
+
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not msg:
+        return
+
+    cfg = server_cfg if server_cfg is not None else config
+    sid = cfg.get("id", "default")
+    sname = cfg.get("name", sid)
 
     explicit_flag = ""
     if context.args:
@@ -208,25 +221,27 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 explicit_flag = "-6"
                 break
 
-    base_cmd = str(config.get("ip_quality_cmd") or DEFAULT_QUALITY_CMD).strip()
+    base_cmd = str(cfg.get("ip_quality_cmd") or DEFAULT_QUALITY_CMD).strip()
     quality_cmd = base_cmd
     if explicit_flag and explicit_flag not in quality_cmd:
         quality_cmd = f"{quality_cmd} {explicit_flag}"
 
     target_desc = "双栈 (IPv4 & IPv6)" if not explicit_flag else ("IPv6" if explicit_flag == "-6" else "IPv4")
 
-    from utils.remote_ssh import is_remote_ssh_enabled, get_ssh_config
-    if is_remote_ssh_enabled():
-        cfg = get_ssh_config()
-        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 检测 IP 质量 [{target_desc}]，双栈耗时可能需 1~3 分钟，完成后将发送报告预览...")
+    from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled
+    if is_remote_ssh_enabled(server_cfg):
+        ssh_cfg = get_ssh_config(server_config=server_cfg)
+        await msg.reply_text(f"正在通过【{sname}】远程家宽 SSH ({ssh_cfg['host']}) 检测 IP 质量 [{target_desc}]，双栈耗时可能需 1~3 分钟，完成后将发送报告预览...")
     else:
-        await update.message.reply_text(f"正在检测 IP 质量 [{target_desc}]，完成后将发送图片预览...")
+        await msg.reply_text(f"正在检测【{sname}】IP 质量 [{target_desc}]，完成后将发送图片预览...")
 
     loop = asyncio.get_running_loop()
     tmp_dir = None
     try:
-        return_code, output = await loop.run_in_executor(None, run_quality_command, quality_cmd)
-        logger.info(f"IP 质量检测命令返回码: {return_code}")
+        def _exec():
+            return run_quality_command(quality_cmd, server_config=server_cfg)
+        return_code, output = await loop.run_in_executor(None, _exec)
+        logger.info(f"【{sname}】IP 质量检测命令返回码: {return_code}")
 
         svg_urls = extract_svg_urls(output)
         if not svg_urls:
@@ -270,12 +285,13 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception:
                 pass
 
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
         if len(successful_items) == 1:
             item = successful_items[0]
             with open(item["jpg_path"], "rb") as f:
-                await update.message.reply_photo(
+                await msg.reply_photo(
                     photo=f,
-                    caption=f"【{item['label']}】IP 质量检测完成，图片预览已附上。\n🔗 原始报告: {item['url']}",
+                    caption=f"{prefix}【{item['label']}】IP 质量检测完成，图片预览已附上。\n🔗 原始报告: {item['url']}",
                 )
         elif len(successful_items) > 1:
             from telegram import InputMediaPhoto
@@ -287,16 +303,16 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     files_to_close.append(f)
                     media.append(InputMediaPhoto(
                         media=f,
-                        caption=f"【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
+                        caption=f"{prefix}【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
                     ))
-                await update.message.reply_media_group(media=media)
+                await msg.reply_media_group(media=media)
             except Exception as mg_err:
                 logger.warning(f"发送媒体组失败，降级为逐张发送: {mg_err}")
                 for item in successful_items:
                     with open(item["jpg_path"], "rb") as f:
-                        await update.message.reply_photo(
+                        await msg.reply_photo(
                             photo=f,
-                            caption=f"【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
+                            caption=f"{prefix}【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
                         )
             finally:
                 for f in files_to_close:
@@ -306,14 +322,14 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         pass
 
         for item in failed_items:
-            await update.message.reply_text(
-                f"【{item['label']}】图片渲染失败（{redact_text(item['error'])}），已自动降级为报告链接：\n🔗 {item['url']}"
+            await msg.reply_text(
+                f"{prefix}【{item['label']}】图片渲染失败（{redact_text(item['error'])}），已自动降级为报告链接：\n🔗 {item['url']}"
             )
     except subprocess.TimeoutExpired:
-        await update.message.reply_text("IP 质量检测超时，请稍后再试。")
+        await msg.reply_text(f"【{sname}】IP 质量检测超时，请稍后再试。")
     except Exception as e:
-        logger.exception(f"IP 质量检测失败: {e}")
-        await update.message.reply_text(f"IP 质量检测失败：{redact_text(str(e))}")
+        logger.exception(f"【{sname}】IP 质量检测失败: {e}")
+        await msg.reply_text(f"【{sname}】IP 质量检测失败：{redact_text(str(e))}")
     finally:
         if tmp_dir and os.path.isdir(tmp_dir):
             try:

@@ -10,17 +10,18 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-0088cc?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
-[![Tests](https://img.shields.io/badge/Tests-46%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
+[![Tests](https://img.shields.io/badge/Tests-58%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
 
 **[English](README.md)** · **[简体中文](README_CN.md)**
 
 </div>
 
-> 💡 **Special Support**: Out-of-the-box optimized support for **Fachost** (Classic HTTP Change-IP API / Dynamic VPS) and **Boil Network** (Cloud Console API / Residential Broadband), supporting both standalone local deployments and Cloud-to-Edge split architectures.
+> 💡 **Special Support**: Out-of-the-box optimized support for **Fachost** (Classic HTTP Change-IP API / Dynamic VPS) and **Boil Network** (Cloud Console API / Residential Broadband), supporting multi-server centralized management, standalone local deployments, and Cloud-to-Edge split architectures.
 
 ---
 
 - 📖 **[Detailed Configuration Guide & Reference (docs/CONFIGURATION.md)](docs/CONFIGURATION.md)**
+- 🖥️ **[Multi-Server Cluster Management](#-multi-server-cluster-management)**
 - 🔄 **[IP Switching Modes & Deployment Architecture](#-ip-switching-modes--deployment-architecture)**
 - ⚡ **[Quick Start & Installation](#-quick-start)**
 - 🤖 **[Telegram Command Reference](#-command-reference)**
@@ -32,12 +33,18 @@
 
 **VPS IP Bot** is an enterprise-grade Telegram automation bot engineered for VPS proxy servers and dynamic residential broadband (PPPoE redial nodes).
 
-It solves critical pain points in dynamic IP management: client-side quota & cooldown protection, instant multi-cloud DNS synchronization, local DNS cache poisoning avoidance, and accurate dual-stack (IPv4 & IPv6) diagnostic probing through firewalls.
+It solves critical pain points in dynamic IP management: centralized multi-server administration, client-side quota & cooldown protection, instant multi-cloud DNS synchronization, local DNS cache poisoning avoidance, and accurate dual-stack (IPv4 & IPv6) diagnostic probing through firewalls.
 
 ---
 
 ## ✨ Key Features
 
+- 🖥️ **Cluster-Grade Multi-Server Management (Multi-Server Engine)**:
+  - **Manage Multiple Nodes from One Bot**: Control distributed servers (e.g. Hong Kong HKT residential, Tokyo VPS, US residential) in a single bot instance via the `servers:` YAML schema.
+  - **Smart Node Routing & Session Memory**: Use `/use <server_id>` to switch your active working node; run commands directly with node IDs (e.g. `/check hkt`, `/change tokyo`); or tap interactive InlineKeyboard buttons when unselected.
+  - **All-Node Parallel Batch Execution**: Use `/check all` or `/change all` to trigger concurrent operations across all servers without cross-blocking, followed by aggregated summary reports.
+  - **Isolated Concurrency Locks & State Storage**: Each server node has its own `asyncio.Lock` change-guard and isolated `state.json` data partition (`servers[server_id]`); independent per-server cron scheduling and notification recovery.
+  - **100% Backward Compatibility**: Omitting `servers:` automatically runs in legacy single-server mode with zero breaking changes.
 - 🔄 **Triple-Engine IP Switching Architecture**:
   - **Generic Mode (`generic`, Default Recommended)**: Triggers any custom HTTP endpoint (soft router Webhook, redial script, or panel URL), then automatically polls and discovers the new IP via `curl -4 ip.sb`. Zero response format requirements.
   - **Fachost Mode (`fachost` / `classic`)**: Tailored specifically for **Fachost** dynamic VPS panels. Accurately parses JSON responses (`status: "IP changed"`, `new_ip`) with egress verification and timeout fallback.
@@ -139,25 +146,53 @@ The bot supports three distinct operational engines tailored for different infra
 
 ---
 
+## 🖥️ Multi-Server Cluster Management
+
+VPS IP Bot natively supports managing multiple distinct VPS, cloud, and residential nodes within a single bot process:
+
+```text
+                                  Telegram Bot Client
+                                         │
+              ┌──────────────────────────┼──────────────────────────┐
+              ▼                          ▼                          ▼
+      [Node 1: Hong Kong HKT]      [Node 2: Tokyo Cloud]      [Node 3: US Residential]
+      - Mode: Generic API        - Mode: Generic API        - Mode: Boil Residential
+      - Change: Router Webhook   - Change: Cloud Panel API  - Change: Boil Cloud API
+      - SSH: 192.168.1.100       - SSH: Disabled (Direct)   - SSH: Edge Home Tunnel
+      - DNS: hkt.example.com     - DNS: tokyo.example.com   - DNS: None
+      - Cooldown & Cron: Iso     - Cooldown & Cron: Iso     - Cooldown & Cron: Iso
+```
+
+### Multi-Server Operations:
+1. **Cluster Dashboard**: Send `/servers` or `/nodes` to view an overview of all managed nodes with quick action buttons.
+2. **Switch Active Node**: Send `/use <server_id>` (e.g. `/use hkt`) to bind your session's default server, or send `/use` to pick via inline buttons.
+3. **Explicit Targeted Execution**: Supply server ID as the first argument, e.g. `/check hkt`, `/change tokyo`, `/quality boil_us`, `/speedtest hkt`.
+4. **All-Node Parallel Batch Execution**: Send `/check all` or `/change all` to trigger concurrent operations across all servers without cross-blocking, followed by aggregated summary reports.
+5. **Interactive Selection**: When multiple servers are defined and no server is specified or selected, an interactive InlineKeyboard will be displayed.
+
+---
+
 ## 🤖 Command Reference
 
 | Command | Arguments | Permission | Description |
 | :--- | :--- | :---: | :--- |
 | `/start` | None | Public | Show welcome message and available commands |
-| `/check` | None | Admin | Check current public IP, dual-stack addresses & GFW domestic reachability |
-| `/change` | None | Admin | Trigger manual IP change and sync configured DNS records |
-| `/ip_status` | None | Admin | Inspect current IP mode, cooldown timer, and remaining quota |
-| `/quality` | `[-4 / -6]` | Admin | Generate high-res IP quality card (dual-stack album or single-stack photo) |
-| `/stream` | `[region]` | Admin | Run streaming unlock check (`2`=HK+Global, `1`=TW, `0`=Global) |
-| `/ping` | `[-4/-6] [target] [-c count]` | Admin | Test network latency with IPv4/IPv6 target auto-detection |
-| `/speedtest`| None | Admin | Interactive Ookla Speedtest with client egress IP & protocol stack |
-| `/health` | None | Admin | Check bot system CPU, memory, disk, and dependencies status |
+| `/servers` | None | Admin | **View dashboard of all managed servers**, with default switch & batch action buttons |
+| `/use` | `[server_id]` | Admin | **Switch default operating server** for your session (shows buttons if omitted) |
+| `/check` | `[server_id/all]` | Admin | Check public IP, dual-stack addresses & GFW domestic reachability (single or all) |
+| `/change` | `[server_id/all]` | Admin | Trigger IP change and sync configured DNS records (single or all concurrently) |
+| `/ip_status` | `[server_id/all]` | Admin | Inspect IP mode, cooldown timer, and remaining quota for target or all servers |
+| `/quality` | `[server_id] [-4 / -6]` | Admin | Generate high-res IP quality card (dual-stack album or single-stack photo) |
+| `/stream` | `[server_id] [region]` | Admin | Run streaming unlock check (`2`=HK+Global, `1`=TW, `0`=Global) |
+| `/ping` | `[server_id] [-4/-6] [target] [-c count]` | Admin | Test network latency with IPv4/IPv6 target auto-detection |
+| `/speedtest`| `[server_id]` | Admin | Interactive Ookla Speedtest with client egress IP & protocol stack |
+| `/health` | None | Admin | Check bot system CPU, memory, disk, and all managed nodes connectivity status |
 | `/set_ip_mode` | `[generic/fachost/boil]` | Super Admin | Switch IP change provider dynamically via buttons or arguments |
 | `/set_boil_token`| `<token>` | Super Admin | Set and reload Boil API token |
 | `/set_ip_api` | `<url>` | Super Admin | Set change-IP API endpoint URL |
-| `/auto_start` | None | Super Admin | Enable daily scheduled automatic IP rotation |
+| `/auto_start` | None | Super Admin | Enable daily scheduled automatic IP rotation (scheduled per node) |
 | `/auto_stop` | None | Super Admin | Disable daily scheduled automatic IP rotation |
-| `/auto_status`| None | Admin | View scheduled automatic change status and next trigger time |
+| `/auto_status`| None | Admin | View scheduled automatic change status and per-node schedules |
 | `/set_auto_time`| `HH:MM` | Super Admin | Set daily automatic change time in Beijing Time (`04:00`) |
 | `/manage_users`| None | Super Admin | Interactive button-based admin user management (Add/Remove) |
 | `/logs` | `[lines]` | Super Admin | View recent bot logs with automatic credential redaction |

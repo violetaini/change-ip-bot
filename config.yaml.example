@@ -112,3 +112,58 @@ remote_ssh_key_path: "/opt/vps-change-ip/ssh_key.pem"
 remote_ssh_password: ""
 remote_ssh_timeout: 300
 
+# ==============================================================================
+# 多服务器管理配置 (Multi-Server Management)
+# ==============================================================================
+# 如果您有多台服务器/节点需要同时管理（如香港HKT、东京机房、内网住宅等），
+# 可在此配置 servers 列表。配置后机器人将支持：
+# 1. /servers 查看所有节点看板与状态
+# 2. /use <节点ID> 切换当前默认操作节点
+# 3. /check [节点ID/all]、/change [节点ID/all] 指定节点或并行批量执行
+# 4. /quality [节点ID]、/stream [节点ID]、/ping [节点ID]、/speedtest [节点ID]
+# 5. 各节点独立的换IP锁（互不阻塞）、独立DNS同步、独立定时任务
+#
+# 注意事项：
+# - 每个节点必须拥有唯一的 id（字母/数字/下划线）
+# - 节点未填写的配置项将自动继承上方的全局配置（例如 telegram_chat_id、dns_provider 等）
+# - 若不配置 servers 或留空，系统自动保持单服务器向后兼容运行，无需修改原有配置。
+#
+# servers:
+#   - id: "hkt"
+#     name: "香港 HKT 家宽"
+#     ip_change_provider: "generic"
+#     ip_change_api: "http://192.168.1.100:8080/change-ip" # 支持内网或公网地址
+#     remote_ssh_enabled: true
+#     remote_ssh_host: "hkt.example.com"
+#     remote_ssh_port: 22
+#     remote_ssh_user: "root"
+#     remote_ssh_key_path: "/opt/vps-change-ip/hkt_ssh.key"
+#     dns_update_enabled: true
+#     dns_provider: "cloudflare"
+#     dns_record_name: "hkt.example.com"
+#     dns_zone_name: "example.com"
+#     auto_change_enabled: true
+#     auto_change_time: "04:00"
+#
+#   - id: "tokyo"
+#     name: "东京 VPS 节点"
+#     ip_change_provider: "generic"
+#     ip_change_api: "https://api.tokyo-vps.com/change"
+#     remote_ssh_enabled: false
+#     dns_update_enabled: true
+#     dns_provider: "cloudflare"
+#     dns_record_name: "tokyo.example.com"
+#     dns_zone_name: "example.com"
+#     auto_change_enabled: true
+#     auto_change_time: "04:30"
+#
+#   - id: "boil_us"
+#     name: "美国 Boil 住宅节点"
+#     ip_change_provider: "boil"
+#     boil_api_base_url: "https://ippanel.boil.network"
+#     boil_api_token: "your_boil_api_token_here"
+#     remote_ssh_enabled: false
+#     dns_update_enabled: false
+#     auto_change_enabled: false
+
+

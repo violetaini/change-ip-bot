@@ -5,11 +5,11 @@ import json
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import requests
 
-from config import config
+from config import config, get_server_config, get_servers, is_multi_server_mode
 from services.dns_update_service import update_dns_if_enabled
 from utils.logger import logger
 from utils.network import (
@@ -26,10 +26,22 @@ from utils.redact import redact_text
 from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
 from utils.state import (
     get_last_change_time,
+    load_server_state,
     load_state,
     update_change_state,
+    update_server_change_state,
+    update_server_state_keys,
     update_state_keys,
 )
+
+_SERVER_CHANGE_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def get_server_change_lock(server_id: str) -> asyncio.Lock:
+    sid = str(server_id or "default").strip().lower()
+    if sid not in _SERVER_CHANGE_LOCKS:
+        _SERVER_CHANGE_LOCKS[sid] = asyncio.Lock()
+    return _SERVER_CHANGE_LOCKS[sid]
 
 
 @dataclass
@@ -42,11 +54,15 @@ class ChangeResult:
     dns_message: str = ""
     trigger: str = "manual"
     raw: Optional[dict] = None
+    server_id: str = "default"
+    server_name: str = ""
 
 
-def _check_interval() -> Optional[str]:
-    interval = int(config.get("ip_change_interval", 2))
-    last_change = get_last_change_time()
+def _check_interval(server_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    cfg = server_config if server_config is not None else config
+    sid = str(cfg.get("id") or "default").strip()
+    interval = int(cfg.get("ip_change_interval", 2))
+    last_change = get_last_change_time(sid)
     if not last_change:
         return None
 
@@ -58,9 +74,10 @@ def _check_interval() -> Optional[str]:
 
 
 def build_result_message(result: ChangeResult) -> str:
+    title = f"【{result.server_name}】" if result.server_name else ""
     if result.success:
         return (
-            "IP更换成功\n"
+            f"{title}IP更换成功\n"
             f"状态: {result.status}\n"
             f"说明: {result.message}\n"
             f"旧IP: {result.old_ip or '未知'}\n"
@@ -68,7 +85,7 @@ def build_result_message(result: ChangeResult) -> str:
             f"DNS结果: {result.dns_message or '未执行'}"
         )
     return (
-        "IP更换失败\n"
+        f"{title}IP更换失败\n"
         f"状态: {result.status}\n"
         f"说明: {result.message}\n"
         f"旧IP: {result.old_ip or '未知'}\n"
@@ -76,13 +93,13 @@ def build_result_message(result: ChangeResult) -> str:
     )
 
 
-async def _wait_for_public_ip_change(old_ip: str, retries: int = 12, delay: int = 10) -> str:
+async def _wait_for_public_ip_change(old_ip: str, retries: int = 12, delay: int = 10, server_config: Optional[Dict[str, Any]] = None) -> str:
     if not old_ip:
         return ""
     for idx in range(retries):
         await asyncio.sleep(delay)
         try:
-            current_ip = await asyncio.to_thread(get_active_public_ipv4)
+            current_ip = await asyncio.to_thread(get_active_public_ipv4, 8, server_config)
             logger.info(f"超时兜底校验第 {idx + 1}/{retries} 次，当前公网IP: {current_ip}")
             if current_ip and current_ip != old_ip:
                 return current_ip
@@ -104,14 +121,15 @@ async def _wait_for_boil_ip_change(old_ip: str, base_url: str, token: str, retri
     return ""
 
 
-async def _verify_changed_ip(target_ip: str) -> bool:
-    if not config.get("ip_change_verify_public_ip", True):
+async def _verify_changed_ip(target_ip: str, server_config: Optional[Dict[str, Any]] = None) -> bool:
+    cfg = server_config if server_config is not None else config
+    if not cfg.get("ip_change_verify_public_ip", True):
         return True
 
-    await asyncio.sleep(int(config.get("ip_change_verify_delay", 5)))
-    retry_count = int(config.get("ip_change_retry_verify_count", 3))
+    await asyncio.sleep(int(cfg.get("ip_change_verify_delay", 5)))
+    retry_count = int(cfg.get("ip_change_retry_verify_count", 3))
     for _ in range(retry_count):
-        curr = await asyncio.to_thread(get_active_public_ipv4)
+        curr = await asyncio.to_thread(get_active_public_ipv4, 8, server_config)
         if curr and curr == target_ip:
             return True
         if await asyncio.to_thread(verify_public_ip_matches, target_ip):
@@ -120,26 +138,28 @@ async def _verify_changed_ip(target_ip: str) -> bool:
     return False
 
 
-def _update_dns_safely(new_ip: str) -> str:
+def _update_dns_safely(new_ip: str, server_config: Optional[Dict[str, Any]] = None) -> str:
+    cfg = server_config if server_config is not None else config
     # 换IP成功并获得新IP后，立即更新本地内存DNS映射，防止SmartDNS/本地DNS缓存滞后
     try:
         from utils.remote_ssh import set_cached_host_ip
         for host_key in ("dns_record_name", "huawei_dns_record_name", "remote_ssh_host"):
-            hostname = str(config.get(host_key) or "").strip().rstrip(".")
+            hostname = str(cfg.get(host_key) or "").strip().rstrip(".")
             if hostname:
                 set_cached_host_ip(hostname, new_ip)
     except Exception as ex:
         logger.debug(f"更新本地DNS映射异常: {ex}")
 
-    provider = get_ip_change_provider_name()
+    provider = get_ip_change_provider_name(cfg)
     # 核心规则：当开启了远程 SSH，且使用的是 generic 或 fachost 模式时，不支持/跳过由 Bot 更新 DDNS
-    # （因为远程 SSH 模式下，远端主机自身必须自建独立 DDNS 维护其外部域名；且此架构下禁用 Bot DDNS 避免覆盖与死锁）
-    if is_remote_ssh_enabled() and provider in ("generic", "fachost", "classic"):
+    if is_remote_ssh_enabled(cfg) and provider in ("generic", "fachost", "classic"):
         msg = "远程 SSH 模式下不执行 DDNS 更新（由远端主机独立 DDNS 维护）"
         logger.info(msg)
         return msg
 
     try:
+        if server_config is not None:
+            return update_dns_if_enabled(new_ip, server_config=server_config)
         return update_dns_if_enabled(new_ip)
     except Exception as dns_error:
         dns_message = f"DNS更新失败: {dns_error}"
@@ -147,12 +167,12 @@ def _update_dns_safely(new_ip: str) -> str:
         return dns_message
 
 
-def get_active_public_ipv4(timeout: int = 8) -> str:
+def get_active_public_ipv4(timeout: int = 8, server_config: Optional[Dict[str, Any]] = None) -> str:
     """获取当前目标的公网 IPv4 地址。若启用远程 SSH 则在目标机执行，否则在本地执行。优先使用 curl -4 ip.sb"""
-    if is_remote_ssh_enabled():
+    if is_remote_ssh_enabled(server_config):
         try:
             cmd = "curl -4 -s --connect-timeout 4 -m 6 api-ipv4.ip.sb/ip || curl -4 -s --connect-timeout 4 -m 6 https://api.ipify.org"
-            code, out = run_remote_ssh_command(cmd, timeout=timeout + 4)
+            code, out = run_remote_ssh_command(cmd, timeout=timeout + 4, server_config=server_config)
             if code == 0:
                 for line in reversed(out.strip().splitlines()):
                     candidate = line.strip()
@@ -202,8 +222,9 @@ def get_active_public_ipv4(timeout: int = 8) -> str:
     return ""
 
 
-def get_ip_change_provider_name() -> str:
-    p = str(config.get("ip_change_provider") or "generic").strip().lower()
+def get_ip_change_provider_name(server_config: Optional[Dict[str, Any]] = None) -> str:
+    cfg = server_config if server_config is not None else config
+    p = str(cfg.get("ip_change_provider") or "generic").strip().lower()
     if p == "classic":
         return "fachost"
     return p
@@ -226,38 +247,43 @@ def is_private_or_local_target(url: str) -> bool:
         return False
 
 
-async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
-    interval_error = _check_interval()
+async def _perform_generic_ip_change(server_config: Optional[Dict[str, Any]] = None, trigger: str = "manual") -> ChangeResult:
+    cfg = server_config if server_config is not None else config
+    sid = str(cfg.get("id") or "default").strip()
+    sname = str(cfg.get("name") or sid).strip()
+
+    interval_error = _check_interval(cfg)
     if interval_error:
         return ChangeResult(
             success=False,
             status="RATE_LIMITED",
             message=interval_error,
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
-    api_url = str(config.get("ip_change_api", "")).strip()
+    api_url = str(cfg.get("ip_change_api", "")).strip()
     if not api_url:
         return ChangeResult(
             success=False,
             status="CONFIG_ERROR",
             message="未配置 ip_change_api",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
     # 1. 换 IP 前记录旧 IP
-    old_ip = await asyncio.to_thread(get_active_public_ipv4)
-    logger.info(f"[Generic通用模式] 换IP前当前出口IP: {old_ip or '未知'}")
+    old_ip = await asyncio.to_thread(get_active_public_ipv4, 8, cfg)
+    logger.info(f"[{sname} Generic通用模式] 换IP前当前出口IP: {old_ip or '未知'}")
 
     # 2. 触发通用换 IP API
-    # 智能分流：
-    # - 内网/局域网地址 (如 192.168.1.1/127.0.0.1)：必须在内网环境访问，若开启了 SSH 则通过 SSH 穿透到家宽内部调用 curl 触发
-    # - 公网地址：直接由当前运行 Bot 的外部服务器发送 HTTP GET 请求
-    timeout = int(config.get("ip_change_timeout", 60))
+    timeout = int(cfg.get("ip_change_timeout", 60))
     is_private_api = is_private_or_local_target(api_url)
 
-    if is_remote_ssh_enabled() and is_private_api:
-        logger.info(f"[Generic通用模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 隧道在家宽内部执行 curl 触发...")
+    if is_remote_ssh_enabled(cfg) and is_private_api:
+        logger.info(f"[{sname} Generic通用模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 隧道在家宽内部执行 curl 触发...")
         try:
             cmd = f"curl -s -m 10 '{api_url}'"
             code, out = await asyncio.to_thread(
@@ -265,39 +291,40 @@ async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
                 cmd,
                 timeout=15,
                 allow_retry_on_ip_change=False,
+                server_config=cfg,
             )
-            logger.info(f"[Generic通用模式] 远程 SSH 触发完成，返回码: {code}")
+            logger.info(f"[{sname} Generic通用模式] 远程 SSH 触发完成，返回码: {code}")
         except Exception as e:
-            logger.warning(f"[Generic通用模式] 远程 SSH 触发请求中断（通常因路由器/接口立即重启导致）: {e}")
+            logger.warning(f"[{sname} Generic通用模式] 远程 SSH 触发请求中断（通常因路由器/接口立即重启导致）: {e}")
     else:
-        logger.info(f"[Generic通用模式] 换IP API为公网地址 ({api_url})，由外部服务器直接请求触发...")
+        logger.info(f"[{sname} Generic通用模式] 换IP API为公网地址 ({api_url})，由外部服务器直接请求触发...")
         try:
             def _trigger():
                 resp = requests.get(api_url, timeout=timeout)
                 return resp.status_code, resp.text[:200]
             code, text = await asyncio.to_thread(_trigger)
-            logger.info(f"[Generic通用模式] 换IP API触发成功，响应 HTTP {code}: {redact_text(text)}")
+            logger.info(f"[{sname} Generic通用模式] 换IP API触发成功，响应 HTTP {code}: {redact_text(text)}")
         except requests.exceptions.RequestException as e:
-            logger.warning(f"[Generic通用模式] 换IP API 请求断开或超时（通常因路由器/接口立即重启导致）: {e}")
+            logger.warning(f"[{sname} Generic通用模式] 换IP API 请求断开或超时（通常因路由器/接口立即重启导致）: {e}")
 
     # 3. 轮询探测新公网 IP (使用 curl -4 ip.sb 轮询)
-    poll_retries = int(config.get("ip_change_poll_retries", 18))
-    poll_delay = int(config.get("ip_change_poll_delay", 5))
+    poll_retries = int(cfg.get("ip_change_poll_retries", 18))
+    poll_delay = int(cfg.get("ip_change_poll_delay", 5))
     new_ip = ""
 
     for attempt in range(1, poll_retries + 1):
         await asyncio.sleep(poll_delay)
 
         # 若启用远程 SSH，每次轮询时强制刷新 1.1.1.1 DoH 解析，以实时跟踪家宽域名的最新动态 IP
-        if is_remote_ssh_enabled():
-            raw_host = str(config.get("remote_ssh_host") or "").strip()
+        if is_remote_ssh_enabled(cfg):
+            raw_host = str(cfg.get("remote_ssh_host") or "").strip()
             if raw_host:
                 from utils.remote_ssh import resolve_target_host
-                refreshed_host_ip = await asyncio.to_thread(resolve_target_host, raw_host, True)
-                logger.debug(f"[Generic通用模式] 轮询第 {attempt} 次，实时刷新目标主机 DoH 解析: {raw_host} -> {refreshed_host_ip}")
+                refreshed_host_ip = await asyncio.to_thread(resolve_target_host, raw_host, True, cfg)
+                logger.debug(f"[{sname} Generic通用模式] 轮询第 {attempt} 次，实时刷新目标主机 DoH 解析: {raw_host} -> {refreshed_host_ip}")
 
-        curr = await asyncio.to_thread(get_active_public_ipv4)
-        logger.info(f"[Generic通用模式] 轮询探测新IP 第 {attempt}/{poll_retries} 次: {curr}")
+        curr = await asyncio.to_thread(get_active_public_ipv4, 8, cfg)
+        logger.info(f"[{sname} Generic通用模式] 轮询探测新IP 第 {attempt}/{poll_retries} 次: {curr}")
         if curr and is_valid_ipv4(curr):
             if old_ip and curr != old_ip:
                 new_ip = curr
@@ -314,10 +341,12 @@ async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
             old_ip=old_ip,
             new_ip="",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
     # 4. 更新 DNS
-    dns_message = await asyncio.to_thread(_update_dns_safely, new_ip)
+    dns_message = await asyncio.to_thread(_update_dns_safely, new_ip, server_config)
 
     return ChangeResult(
         success=True,
@@ -327,44 +356,55 @@ async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
         new_ip=new_ip,
         dns_message=dns_message,
         trigger=trigger,
+        server_id=sid,
+        server_name=sname,
     )
 
 
-async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
-    interval_error = _check_interval()
+async def _perform_fachost_ip_change(server_config: Optional[Dict[str, Any]] = None, trigger: str = "manual") -> ChangeResult:
+    cfg = server_config if server_config is not None else config
+    sid = str(cfg.get("id") or "default").strip()
+    sname = str(cfg.get("name") or sid).strip()
+
+    interval_error = _check_interval(cfg)
     if interval_error:
         return ChangeResult(
             success=False,
             status="RATE_LIMITED",
             message=interval_error,
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
-    api_url = str(config.get("ip_change_api", "")).strip()
+    api_url = str(cfg.get("ip_change_api", "")).strip()
     if not api_url:
         return ChangeResult(
             success=False,
             status="CONFIG_ERROR",
             message="未配置 ip_change_api",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
     public_old_ip = ""
     try:
-        public_old_ip = await asyncio.to_thread(get_active_public_ipv4)
+        public_old_ip = await asyncio.to_thread(get_active_public_ipv4, 8, cfg)
     except Exception as e:
         logger.warning(f"更换前获取公网IP失败，将尽量按接口响应判断: {e}")
 
     try:
         is_private_api = is_private_or_local_target(api_url)
-        if is_remote_ssh_enabled() and is_private_api:
-            logger.info(f"[Fachost模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 在家宽内部调用 curl 触发...")
-            timeout_sec = int(config.get("ip_change_timeout", 600))
+        if is_remote_ssh_enabled(cfg) and is_private_api:
+            logger.info(f"[{sname} Fachost模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 在家宽内部调用 curl 触发...")
+            timeout_sec = int(cfg.get("ip_change_timeout", 600))
             code, out = await asyncio.to_thread(
                 run_remote_ssh_command,
                 f"curl -s -m {timeout_sec} '{api_url}'",
                 timeout=timeout_sec + 10,
                 allow_retry_on_ip_change=False,
+                server_config=cfg,
             )
             try:
                 api_data = json.loads(out)
@@ -374,7 +414,7 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
             api_data = await asyncio.to_thread(
                 call_change_ip_api,
                 api_url,
-                int(config.get("ip_change_timeout", 600)),
+                int(cfg.get("ip_change_timeout", 600)),
             )
 
         parsed = parse_change_ip_result(api_data)
@@ -391,6 +431,8 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
                 new_ip=new_ip,
                 trigger=trigger,
                 raw=api_data,
+                server_id=sid,
+                server_name=sname,
             )
 
         if status != "IP changed":
@@ -402,13 +444,15 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
                 new_ip=new_ip,
                 trigger=trigger,
                 raw=api_data,
+                server_id=sid,
+                server_name=sname,
             )
 
-        verified = await _verify_changed_ip(new_ip)
+        verified = await _verify_changed_ip(new_ip, cfg)
         if not verified:
             logger.warning(f"API返回已更换，但公网IP暂未校验通过: {new_ip}")
 
-        dns_message = await asyncio.to_thread(_update_dns_safely, new_ip)
+        dns_message = await asyncio.to_thread(_update_dns_safely, new_ip, server_config)
 
         return ChangeResult(
             success=True,
@@ -419,13 +463,15 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
             dns_message=dns_message,
             trigger=trigger,
             raw=api_data,
+            server_id=sid,
+            server_name=sname,
         )
 
     except ChangeIPTimeoutError as e:
         logger.warning(f"换IP接口超时，转入公网IP兜底判断: {e}")
-        fallback_new_ip = await _wait_for_public_ip_change(public_old_ip)
+        fallback_new_ip = await _wait_for_public_ip_change(public_old_ip, server_config=cfg)
         if fallback_new_ip:
-            dns_message = await asyncio.to_thread(_update_dns_safely, fallback_new_ip)
+            dns_message = await asyncio.to_thread(_update_dns_safely, fallback_new_ip, server_config)
             return ChangeResult(
                 success=True,
                 status="TIMEOUT_BUT_IP_CHANGED",
@@ -434,6 +480,8 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
                 new_ip=fallback_new_ip,
                 dns_message=dns_message,
                 trigger=trigger,
+                server_id=sid,
+                server_name=sname,
             )
 
         return ChangeResult(
@@ -443,6 +491,8 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
             old_ip=public_old_ip,
             new_ip="",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
     except Exception as e:
@@ -454,11 +504,17 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
             old_ip=public_old_ip,
             new_ip="",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
 
-async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
-    state = load_state()
+async def _perform_boil_ip_change(server_config: Optional[Dict[str, Any]] = None, trigger: str = "manual") -> ChangeResult:
+    cfg = server_config if server_config is not None else config
+    sid = str(cfg.get("id") or "default").strip()
+    sname = str(cfg.get("name") or sid).strip()
+
+    state = load_server_state(sid)
     now = time.time()
     next_allowed_at = float(state.get("boil_next_allowed_at", 0) or 0)
     if now < next_allowed_at:
@@ -469,24 +525,28 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
             status="COOLDOWN_PROTECTION",
             message=f"Boil 频率限制冷却中，还需等待 {wait_sec} 秒（预计可用时间: {next_dt}），已自动拦截以防扣减API配额",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
-    token = str(config.get("boil_api_token", "")).strip()
-    base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
+    token = str(cfg.get("boil_api_token", "")).strip()
+    base_url = str(cfg.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
     if not token:
         return ChangeResult(
             success=False,
             status="CONFIG_ERROR",
             message="未配置 boil_api_token，请使用 /set_boil_token 设置或在 config.yaml 中配置",
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
     boil_old_ip = ""
     try:
         boil_old_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
-        logger.info(f"Boil 更换前当前IP: {boil_old_ip}")
+        logger.info(f"[{sname} Boil] 更换前当前IP: {boil_old_ip}")
     except Exception as e:
-        logger.warning(f"Boil 更换前通过API获取IP失败，尝试本机公网IP兜底: {e}")
+        logger.warning(f"[{sname} Boil] 更换前通过API获取IP失败，尝试本机公网IP兜底: {e}")
         try:
             boil_old_ip = await asyncio.to_thread(get_current_ip)
         except Exception:
@@ -501,6 +561,8 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
             message=f"Boil API 请求超时: {e}",
             old_ip=boil_old_ip,
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
     except Exception as e:
         logger.error(f"调用 Boil 换IP接口失败: {e}")
@@ -510,11 +572,13 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
             message=f"Boil 换IP失败: {redact_text(str(e))}",
             old_ip=boil_old_ip,
             trigger=trigger,
+            server_id=sid,
+            server_name=sname,
         )
 
     next_allowed = float(api_data.get("next_allowed_at") or 0)
     uses_left = api_data.get("uses_left")
-    update_state_keys({
+    update_server_state_keys(sid, {
         "boil_next_allowed_at": next_allowed,
         "boil_uses_left": uses_left if uses_left is not None else -1,
     })
@@ -522,8 +586,8 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
     # 优先通过 Boil API 轮询新IP（每5秒检查一次，最多等待90秒）
     new_ip = await _wait_for_boil_ip_change(boil_old_ip, base_url, token, retries=18, delay=5)
     if not new_ip:
-        # 兜底：如果 API 未返回新 IP，尝试检查本机公网 IP（兼容 Bot 部署在目标机自身的情况）
-        new_ip = await _wait_for_public_ip_change(boil_old_ip, retries=3, delay=3)
+        # 兜底：如果 API 未返回新 IP，尝试检查目标公网 IP
+        new_ip = await _wait_for_public_ip_change(boil_old_ip, retries=3, delay=3, server_config=cfg)
 
     if not new_ip:
         uses_info = f"，今日剩余配额: {uses_left}次" if uses_left is not None else ""
@@ -534,9 +598,11 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
             old_ip=boil_old_ip,
             trigger=trigger,
             raw=api_data,
+            server_id=sid,
+            server_name=sname,
         )
 
-    dns_message = await asyncio.to_thread(_update_dns_safely, new_ip)
+    dns_message = await asyncio.to_thread(_update_dns_safely, new_ip, server_config)
     uses_info = f"；今日剩余配额: {uses_left}次" if uses_left is not None else ""
     return ChangeResult(
         success=True,
@@ -547,25 +613,60 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
         dns_message=dns_message,
         trigger=trigger,
         raw=api_data,
+        server_id=sid,
+        server_name=sname,
     )
 
 
 _perform_classic_ip_change = _perform_fachost_ip_change
 
 
-async def perform_ip_change(trigger: str = "manual") -> ChangeResult:
-    provider = get_ip_change_provider_name()
-    if provider == "boil":
-        return await _perform_boil_ip_change(trigger=trigger)
-    elif provider == "generic":
-        return await _perform_generic_ip_change(trigger=trigger)
-    return await _perform_fachost_ip_change(trigger=trigger)
+async def perform_ip_change(
+    trigger: str = "manual",
+    server_id: Optional[str] = None,
+    server_config: Optional[Dict[str, Any]] = None,
+) -> ChangeResult:
+    if server_id is None and server_config is None and not is_multi_server_mode():
+        target_cfg = None
+        sid = "default"
+        sname = ""
+    else:
+        target_cfg = server_config or get_server_config(server_id)
+        if target_cfg is None:
+            target_cfg = config
+        sid = str(target_cfg.get("id") or "default").strip()
+        sname = str(target_cfg.get("name") or sid).strip()
 
+    lock = get_server_change_lock(sid)
+    if lock.locked():
+        return ChangeResult(
+            success=False,
+            status="LOCKED",
+            message=f"服务器 [{sname or sid}] 正在执行换IP任务，请勿重复发起",
+            trigger=trigger,
+            server_id=sid,
+            server_name=sname,
+        )
+
+    async with lock:
+        cfg_for_prov = target_cfg if target_cfg is not None else config
+        provider = get_ip_change_provider_name(cfg_for_prov)
+        if provider == "boil":
+            res = await _perform_boil_ip_change(server_config=target_cfg, trigger=trigger)
+        elif provider == "generic":
+            res = await _perform_generic_ip_change(server_config=target_cfg, trigger=trigger)
+        else:
+            res = await _perform_fachost_ip_change(server_config=target_cfg, trigger=trigger)
+        res.server_id = sid
+        res.server_name = sname
+        return res
 
 
 async def persist_result_for_notification(result: ChangeResult, chat_id: str = "") -> str:
     text = build_result_message(result)
-    update_change_state(
+    sid = result.server_id or "default"
+    update_server_change_state(
+        server_id=sid,
         old_ip=result.old_ip,
         new_ip=result.new_ip,
         status=result.status,

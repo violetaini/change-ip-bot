@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import time
 import uuid
+import contextvars
+from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 import requests
@@ -14,9 +16,13 @@ from utils.logger import logger
 
 
 HTTP_TIMEOUT = 30
+_CURRENT_SERVER_CFG = contextvars.ContextVar("current_server_cfg", default=None)
 
 
 def _cfg(key: str, default=""):
+    srv_cfg = _CURRENT_SERVER_CFG.get()
+    if srv_cfg and key in srv_cfg and srv_cfg[key] is not None:
+        return srv_cfg[key]
     value = config.get(key, default)
     if value is None:
         return default
@@ -35,23 +41,38 @@ def _record_config() -> tuple[str, str, str, int]:
     return zone_name.rstrip("."), record_name.rstrip("."), record_type, ttl
 
 
-def get_dns_record_name() -> str:
-    return _record_config()[1]
+def get_dns_record_name(server_config: Optional[Dict[str, Any]] = None) -> str:
+    token = _CURRENT_SERVER_CFG.set(server_config) if server_config is not None else None
+    try:
+        return _record_config()[1]
+    finally:
+        if token is not None:
+            _CURRENT_SERVER_CFG.reset(token)
 
 
-def get_dns_provider_name() -> str:
-    provider = _text("dns_provider").lower()
-    if provider:
-        return provider
-    if config.get("huawei_dns_enabled"):
-        return "huawei"
-    return ""
+def get_dns_provider_name(server_config: Optional[Dict[str, Any]] = None) -> str:
+    token = _CURRENT_SERVER_CFG.set(server_config) if server_config is not None else None
+    try:
+        provider = _text("dns_provider").lower()
+        if provider:
+            return provider
+        if bool(_cfg("huawei_dns_enabled")):
+            return "huawei"
+        return ""
+    finally:
+        if token is not None:
+            _CURRENT_SERVER_CFG.reset(token)
 
 
-def is_dns_update_enabled() -> bool:
-    if config.get("huawei_dns_enabled"):
-        return True
-    return bool(config.get("dns_update_enabled") and get_dns_provider_name())
+def is_dns_update_enabled(server_config: Optional[Dict[str, Any]] = None) -> bool:
+    token = _CURRENT_SERVER_CFG.set(server_config) if server_config is not None else None
+    try:
+        if bool(_cfg("huawei_dns_enabled")):
+            return True
+        return bool(_cfg("dns_update_enabled") and get_dns_provider_name())
+    finally:
+        if token is not None:
+            _CURRENT_SERVER_CFG.reset(token)
 
 
 def _require_config(provider: str, values: dict[str, str]) -> None:
@@ -359,22 +380,27 @@ SUPPORTED_DNS_PROVIDERS = (
 )
 
 
-def update_dns_if_enabled(new_ip: str) -> str:
-    if config.get("huawei_dns_enabled") and not _text("dns_provider"):
-        return update_huawei_dns_if_enabled(new_ip)
+def update_dns_if_enabled(new_ip: str, server_config: Optional[Dict[str, Any]] = None) -> str:
+    token = _CURRENT_SERVER_CFG.set(server_config) if server_config is not None else None
+    try:
+        if bool(_cfg("huawei_dns_enabled")) and not _text("dns_provider"):
+            return update_huawei_dns_if_enabled(new_ip)
 
-    if not config.get("dns_update_enabled"):
-        return "未启用DNS更新"
+        if not bool(_cfg("dns_update_enabled")):
+            return "未启用DNS更新"
 
-    provider = get_dns_provider_name()
-    if provider == "huawei":
-        return HuaweiDNSClient().update_record(new_ip)
+        provider = get_dns_provider_name()
+        if provider == "huawei":
+            return HuaweiDNSClient().update_record(new_ip)
 
-    update_func = PROVIDERS.get(provider)
-    if not update_func:
-        raise RuntimeError(f"不支持的DNS服务商: {provider or '未配置'}")
+        update_func = PROVIDERS.get(provider)
+        if not update_func:
+            raise RuntimeError(f"不支持的DNS服务商: {provider or '未配置'}")
 
-    start = time.monotonic()
-    result = update_func(new_ip)
-    logger.info(f"DNS更新成功: provider={provider}, elapsed={time.monotonic() - start:.1f}s")
-    return result
+        start = time.monotonic()
+        result = update_func(new_ip)
+        logger.info(f"DNS更新成功: provider={provider}, elapsed={time.monotonic() - start:.1f}s")
+        return result
+    finally:
+        if token is not None:
+            _CURRENT_SERVER_CFG.reset(token)

@@ -271,8 +271,75 @@ stream_check_input: "2"                # 自动交互输入项: 2=跨国+香港,
 stream_check_timeout: 1200
 ```
 
+## 8. 多服务器集群管理配置 (Multi-Server Management)
+
+当需要由单个 Telegram Bot 同时管理多台 VPS、家庭宽带或不同机房节点时，在 `config.yaml` 中配置 `servers:` 列表。
+
+### A. 配置结构与覆盖继承规则
+
+```yaml
+# 根级全局配置（所有节点默认继承这些参数）
+telegram_bot_token: "123456789:ABCdefGhIJKlmNoPQRstuvWXyz"
+telegram_chat_id: "987654321"
+ip_change_provider: "generic"
+dns_provider: "cloudflare"
+cloudflare_api_token: "global_cf_token"
+auto_change_enabled: true
+auto_change_time: "04:00"
+
+# 受管节点列表
+servers:
+  - id: "hkt"                               # 节点唯一标识（英文/数字/下划线）
+    name: "香港 HKT 家宽"                   # 节点友好展示名称
+    ip_change_provider: "generic"           # 换 IP 模式
+    ip_change_api: "http://192.168.1.100:8080/reconnect"
+    remote_ssh_enabled: true                # 开启远程 SSH 诊断通道
+    remote_ssh_host: "hkt.example.com"
+    remote_ssh_port: 22
+    remote_ssh_user: "root"
+    remote_ssh_key_path: "/opt/vps-change-ip/hkt_ssh.key"
+    dns_update_enabled: true
+    dns_record_name: "hkt.example.com"
+    dns_zone_name: "example.com"
+    auto_change_enabled: true
+    auto_change_time: "04:00"
+
+  - id: "tokyo"
+    name: "东京 VPS 节点"
+    ip_change_provider: "generic"
+    ip_change_api: "https://api.tokyo-vps.com/change"
+    remote_ssh_enabled: false               # 本地直接检测，无需 SSH
+    dns_update_enabled: true
+    dns_record_name: "tokyo.example.com"
+    dns_zone_name: "example.com"
+    auto_change_enabled: true
+    auto_change_time: "04:30"
+
+  - id: "boil_us"
+    name: "美国 Boil 住宅"
+    ip_change_provider: "boil"
+    boil_api_base_url: "https://ippanel.boil.network"
+    boil_api_token: "your_boil_api_token"
+    dns_update_enabled: false
+    auto_change_enabled: false
+```
+
+### B. 关键机制与行为说明
+
+1. **层级继承与局部重写**：
+   - 节点中的所有配置项均为**可选覆盖**。未声明的字段（如 `telegram_chat_id`、全局超时时间等）将自动从配置文件根级继承。
+   - 每个节点的 `id` 必须全配置唯一，推荐采用简明标识（如 `hkt`、`us1`、`bj_unicom`）。
+2. **完全状态隔离与并发防护**：
+   - 每个节点在 `state.json` 中以 `servers[server_id]` 隔离存储（独立记录上次 IP、更换状态、Boil 冷却与配额）。
+   - 每个节点分配专属的 `asyncio.Lock` 换 IP 锁，多台主机执行换 IP 互不排队阻塞。
+3. **独立定时任务注册**：
+   - 机器人启动时会自动解析各节点自身的 `auto_change_enabled` 与 `auto_change_time`，并在 JobQueue 中注册独立的每日定时任务（如 HKT 04:00 换，东京 04:30 换）。
+4. **100% 单机向后兼容**：
+   - 若不配置 `servers:` 字段或列表为空，系统自动工作在单服务器向后兼容模式下，所有命令行为与旧版本完全一致。
+
 ---
 
-## 8. 完整样例配置模板
+## 9. 完整样例配置模板
 
 完整现成可用的样例模板请参考项目根目录下的 [`config.yaml.example`](file:///D:/myprojetct/change-ip-bot/config.yaml.example)。
+

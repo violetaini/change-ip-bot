@@ -4,10 +4,13 @@ import shutil
 import subprocess
 import time
 
+from typing import Any, Dict, Optional
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import config
+from config import config, is_multi_server_mode
+from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
 from utils.redact import redact_text
@@ -48,12 +51,12 @@ def strip_ansi(text: str) -> str:
     return CONTROL_RE.sub("", text)
 
 
-def run_stream_command(cmd: str, auto_input: str, timeout: int) -> tuple[int, str, float]:
+def run_stream_command(cmd: str, auto_input: str, timeout: int, server_config: Optional[Dict[str, Any]] = None) -> tuple[int, str, float]:
     from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
-    if is_remote_ssh_enabled():
+    if is_remote_ssh_enabled(server_config):
         logger.info("通过远程家宽 SSH 执行流媒体解锁检测脚本")
         started = time.monotonic()
-        code, out = run_remote_ssh_command(cmd, timeout=max(30, int(timeout)), input_data=f"{auto_input.rstrip()}\n")
+        code, out = run_remote_ssh_command(cmd, timeout=max(30, int(timeout)), input_data=f"{auto_input.rstrip()}\n", server_config=server_config)
         elapsed = time.monotonic() - started
         return code, strip_ansi(out).strip(), elapsed
 
@@ -258,15 +261,27 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if not config.get("stream_check_enabled", True):
-        await update.message.reply_text("流媒体检测未启用。")
+        msg = update.message or (update.callback_query.message if update.callback_query else None)
+        if msg:
+            await msg.reply_text("流媒体检测未启用。")
         return
 
-    logger.info(
-        f"收到 stream 命令，用户ID: {update.effective_user.id}，"
-        f"用户名: {update.effective_user.username}"
-    )
+    user_id = update.effective_user.id if update.effective_user else 0
+    logger.info(f"收到 stream 命令，用户ID: {user_id}")
 
-    auto_input = str(config.get("stream_check_input", "2")).strip()
+    server_cfg, is_all, prompt_shown = await resolve_target_server(update, context, "stream", allow_all=False)
+    if prompt_shown:
+        return
+
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not msg:
+        return
+
+    cfg = server_cfg if server_cfg is not None else config
+    sid = cfg.get("id", "default")
+    sname = cfg.get("name", sid)
+
+    auto_input = str(cfg.get("stream_check_input", "2")).strip()
     if context.args:
         first_arg = str(context.args[0]).strip()
         if first_arg in REGION_NAMES or first_arg.isdigit():
@@ -274,30 +289,32 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
 
-    from utils.remote_ssh import is_remote_ssh_enabled, get_ssh_config
-    if is_remote_ssh_enabled():
-        cfg = get_ssh_config()
-        await update.message.reply_text(
-            f"正在通过远程家宽 SSH ({cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
+    from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled
+    if is_remote_ssh_enabled(server_cfg):
+        ssh_cfg = get_ssh_config(server_config=server_cfg)
+        await msg.reply_text(
+            f"正在通过【{sname}】远程家宽 SSH ({ssh_cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
         )
     else:
-        await update.message.reply_text(
-            f"正在执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
+        await msg.reply_text(
+            f"正在【{sname}】执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
         )
 
     try:
-        stream_cmd = str(config.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()
-        timeout = int(config.get("stream_check_timeout", 1200))
+        stream_cmd = str(cfg.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()
+        timeout = int(cfg.get("stream_check_timeout", 1200))
         return_code, output, elapsed = await asyncio.to_thread(
             run_stream_command,
             stream_cmd,
             auto_input,
             timeout,
+            server_cfg,
         )
-        logger.info(f"流媒体检测命令返回码: {return_code}，输出长度: {len(output or '')}")
-        await update.message.reply_text(build_stream_summary(return_code, output, elapsed))
+        logger.info(f"【{sname}】流媒体检测命令返回码: {return_code}，输出长度: {len(output or '')}")
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+        await msg.reply_text(prefix + build_stream_summary(return_code, output, elapsed))
     except subprocess.TimeoutExpired:
-        await update.message.reply_text("流媒体检测超时，请稍后再试。")
+        await msg.reply_text(f"【{sname}】流媒体检测超时，请稍后再试。")
     except Exception as e:
-        logger.exception(f"流媒体检测失败: {e}")
-        await update.message.reply_text(f"流媒体检测失败：{redact_text(str(e))}")
+        logger.exception(f"【{sname}】流媒体检测失败: {e}")
+        await msg.reply_text(f"【{sname}】流媒体检测失败：{redact_text(str(e))}")

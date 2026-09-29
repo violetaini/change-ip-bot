@@ -10,17 +10,18 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-0088cc?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
-[![Tests](https://img.shields.io/badge/Tests-46%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
+[![Tests](https://img.shields.io/badge/Tests-58%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
 
 **[English](README.md)** · **[简体中文](README_CN.md)**
 
 </div>
 
-> 💡 **特别支持**：开箱深度优化并完美支持 **Fachost**（经典 HTTP 换 IP 接口 / 动态 VPS）与 **Boil Network**（云端控制台 API / 住宅宽带），支持单机单节点部署与“云端控制 + 边缘家宽”远程分离部署。
+> 💡 **特别支持**：开箱深度优化并完美支持 **Fachost**（经典 HTTP 换 IP 接口 / 动态 VPS）与 **Boil Network**（云端控制台 API / 住宅宽带），支持多服务器/多节点分布式统一管理，支持单机单节点部署与“云端控制 + 边缘家宽”远程分离部署。
 
 ---
 
 - 📖 **[详细配置指南与最佳实践 (docs/CONFIGURATION_CN.md)](docs/CONFIGURATION_CN.md)**
+- 🖥️ **[多服务器/多节点集群管理模式](#-多服务器集群管理架构)**
 - 🔄 **[换 IP 模式与部署架构选型 (Classic vs. Boil)](#-换-ip-模式与部署架构选型)**
 - ⚡ **[快速安装与部署说明](#-快速开始)**
 - 🤖 **[Telegram 完整命令列表](#-telegram-命令一览)**
@@ -32,12 +33,18 @@
 
 **VPS IP Bot** 是一款面向 VPS 代理服务器与住宅家宽（PPPoE 动态拨号主机）的 Telegram 全功能自动化运维管理机器人。
 
-项目致力于解决动态 IP 服务器运维中的核心痛点：换 IP 过程的配额保护、DNS 动态记录的实时同步、本地 DNS 缓存对新 IP 的解析延迟，以及对双栈（IPv4 / IPv6）和真实境内（GFW）穿透连通性的精准诊断。
+项目致力于解决动态 IP 服务器运维中的核心痛点：多节点统一管理、换 IP 过程的配额保护、DNS 动态记录的实时同步、本地 DNS 缓存对新 IP 的解析延迟，以及对双栈（IPv4 / IPv6）和真实境内（GFW）穿透连通性的精准诊断。
 
 ---
 
 ## ✨ 核心特性
 
+- 🖥️ **集群级多服务器并发管理 (Multi-Server Management)**：
+  - **单实例管控多节点**：一个 Bot 即可同时管理分布在不同区域的多台主机（如香港 HKT 家宽、东京机房、内网住宅等），通过 `servers:` 配置列表灵活定义。
+  - **智能节点路由与会话记忆**：支持 `/use <节点ID>` 绑定当前默认节点；命令支持直接指定节点（如 `/check hkt`、`/change tokyo`）；未指定且未选定时自动弹出交互式 InlineKeyboard 键盘。
+  - **全节点并行批处理**：支持 `/check all` 与 `/change all`，一键并发对所有受管节点进行健康检测或换 IP，并自动汇总各节点执行结果与 DNS 状态。
+  - **独立并发锁与隔离状态机**：各节点拥有独立的 `asyncio.Lock` 换 IP 并发保护锁与 `state.json` 数据隔离分区，互不排队阻塞；支持各节点独立的定时任务调度与断网通知自愈。
+  - **100% 单机向后兼容**：不配置 `servers:` 时自动回退至单机默认模式，现有用户配置零修改平滑过渡。
 - 🔄 **三模式换 IP 架构 (Triple-Engine Architecture)**：
   - **通用模式 (`generic`，默认推荐)**：发起换 IP API 请求（支持各类软路由 Webhook、重拨脚本、控制台 URL），随后自动通过 `curl -4 ip.sb` 轮询获取新 IP，不强制接口返回特定格式，适用面最广。
   - **Fachost 专用模式 (`fachost` / `classic`)**：专为 **Fachost** 动态 VPS 控制面板定制，精准解析响应 JSON（`status: "IP changed"`, `new_ip`）及出口双重校验。
@@ -139,25 +146,53 @@
 
 ---
 
+## 🖥️ 多服务器集群管理架构
+
+Bot 原生支持同时管控多台不同类型、不同地域的 VPS 与家宽节点：
+
+```text
+                                  Telegram 机器人
+                                         │
+              ┌──────────────────────────┼──────────────────────────┐
+              ▼                          ▼                          ▼
+      【节点1: 香港HKT】          【节点2: 东京机房】        【节点3: 美国住宅】
+      - 模式: Generic通用        - 模式: Generic通用        - 模式: Boil住宅
+      - 换IP: 路由器重拨API       - 换IP: 云厂商控制台API     - 换IP: Boil云端API
+      - SSH: 192.168.1.100       - SSH: 关闭 (机房直连)      - SSH: 边缘家宽隧道
+      - DNS: hkt.example.com     - DNS: tokyo.example.com   - DNS: 无
+      - 冷却与定时: 独立计算      - 冷却与定时: 独立计算      - 冷却与定时: 独立计算
+```
+
+### 多服务器核心使用方式：
+1. **看板总览**：发送 `/servers` 或 `/nodes`，一览所有受管服务器的 IP 模式、SSH 状态、DNS 解析与上次换 IP 结果，并带有快捷设为默认与批量操作按钮。
+2. **切换默认节点**：发送 `/use <节点ID>`（例如 `/use hkt`）即可绑定为后续默认操作目标；直接发送 `/use` 弹出交互式按钮点选。
+3. **精准单节点执行**：命令首个参数可直接指定节点 ID，例如 `/check hkt`、`/change tokyo`、`/quality boil_us`、`/speedtest hkt`。
+4. **全节点并行批处理**：发送 `/check all` 或 `/change all`，多台服务器并发执行检测或换 IP，互不阻塞，完成后汇总反馈报告。
+5. **未指定时交互选择**：若配置了多台服务器且用户未指定节点、未设定默认，发送命令将自动弹出 InlineKeyboard 供实时选择。
+
+---
+
 ## 🤖 Telegram 命令一览
 
 | 命令 | 参数 | 权限要求 | 功能说明 |
 | :--- | :--- | :---: | :--- |
 | `/start` | 无 | 普通用户 | 显示欢迎信息与当前可用命令菜单 |
-| `/check` | 无 | 管理员 | 检测当前公网 IP、双栈地址及穿透 GFW 境内连通性 |
-| `/change` | 无 | 管理员 | 手动触发更换 IP，并自动同步更新配置的云厂商 DNS |
-| `/ip_status` | 无 | 管理员 | 查看当前换 IP 模式、冷却剩余时间及每日剩余配额 |
-| `/quality` | `[-4 / -6]` | 管理员 | 生成高质量 IP 体检报告图（双栈自动合并为相册发送） |
-| `/stream` | `[地区编号]` | 管理员 | 检测流媒体解锁情况（`2`=跨国+香港, `1`=台湾, `0`=仅跨国） |
-| `/ping` | `[-4/-6] [目标] [-c 次数]` | 管理员 | 测试网络延迟，支持指定目标、次数或直接输入 IPv6 |
-| `/speedtest`| 无 | 管理员 | 交互式选择节点进行 Ookla 测速，展示出口 IP 栈类型 |
-| `/health` | 无 | 管理员 | 检查 Bot 所在系统 CPU、内存、磁盘及依赖就绪状态 |
+| `/servers` | 无 | 管理员 | **查看所有受管服务器看板**，支持设为默认与一键批量操作 |
+| `/use` | `[节点ID]` | 管理员 | **切换当前默认操作服务器**（无参数时弹出交互式按钮） |
+| `/check` | `[节点ID/all]` | 管理员 | 检测公网 IP、双栈地址及穿透 GFW 连通性（支持单节点或全量并发） |
+| `/change` | `[节点ID/all]` | 管理员 | 手动触发更换 IP 并同步更新 DNS（支持单节点或全量并发） |
+| `/ip_status` | `[节点ID/all]` | 管理员 | 查看指定或全部节点的换 IP 模式、冷却剩余时间及每日剩余配额 |
+| `/quality` | `[节点ID] [-4 / -6]` | 管理员 | 生成高质量 IP 体检报告图（双栈自动合并为相册发送） |
+| `/stream` | `[节点ID] [地区编号]` | 管理员 | 检测流媒体解锁情况（`2`=跨国+香港, `1`=台湾, `0`=仅跨国） |
+| `/ping` | `[节点ID] [-4/-6] [目标] [-c 次数]` | 管理员 | 测试网络延迟，支持指定目标、次数或直接输入 IPv6 |
+| `/speedtest`| `[节点ID]` | 管理员 | 交互式选择节点进行 Ookla 测速，展示出口 IP 栈类型 |
+| `/health` | 无 | 管理员 | 检查 Bot 及所有受管节点的 SSH、DNS、依赖与运行健康度 |
 | `/set_ip_mode` | `[generic/fachost/boil]` | 超级管理员 | 交互式切换换 IP 模式（通用 / Fachost / Boil） |
 | `/set_boil_token`| `<token>` | 超级管理员 | 在线设置并热重载 Boil API Token |
 | `/set_ip_api` | `<url>` | 超级管理员 | 在线设置换 IP 请求接口 URL |
-| `/auto_start` | 无 | 超级管理员 | 开启每日定时自动换 IP 任务 |
+| `/auto_start` | 无 | 超级管理员 | 开启每日定时自动换 IP 任务（多节点各自独立调度） |
 | `/auto_stop` | 无 | 超级管理员 | 关闭每日定时自动换 IP 任务 |
-| `/auto_status`| 无 | 管理员 | 查看自动换 IP 运行状态及下次执行时间 |
+| `/auto_status`| 无 | 管理员 | 查看自动换 IP 运行状态、各节点独立定时及下次执行时间 |
 | `/set_auto_time`| `HH:MM` | 超级管理员 | 设置每日自动换 IP 时间（北京时间，如 `04:00`） |
 | `/manage_users`| 无 | 超级管理员 | 按钮式交互管理普通管理员名单（增加/删除） |
 | `/logs` | `[行数]` | 超级管理员 | 查看 Bot 最近运行日志（敏感信息已脱敏） |

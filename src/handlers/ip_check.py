@@ -1,9 +1,11 @@
 import asyncio
+from typing import Any, Dict, Optional
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import config
+from config import config, get_servers, is_multi_server_mode
+from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
 from utils.network import (
@@ -15,43 +17,37 @@ from utils.network import (
 )
 
 
-async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user_permission(update):
-        return
-
-    user_id = update.effective_user.id
-    user_name = update.effective_user.username
-    full_name = update.effective_user.full_name
-    logger.info(f"收到 check 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
-
-    await update.message.reply_text(text="正在检查IP与境内连通性...")
-
-    provider = str(config.get("ip_change_provider", "classic")).strip().lower()
+async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) -> str:
+    cfg = server_cfg if server_cfg is not None else config
+    sid = str(cfg.get("id") or "default").strip()
+    sname = str(cfg.get("name") or sid).strip()
+    provider = str(cfg.get("ip_change_provider") or "generic").strip().lower()
     from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, set_cached_host_ip
 
+    ssh_enabled = is_remote_ssh_enabled(cfg)
+    ssh_fn = (
+        (lambda cmd, timeout=300, input_data=None: run_remote_ssh_command(
+            cmd, timeout=timeout, input_data=input_data, server_config=cfg
+        ))
+        if ssh_enabled
+        else None
+    )
+
     if provider == "boil":
-        token = str(config.get("boil_api_token", "")).strip()
-        base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
+        token = str(cfg.get("boil_api_token", "")).strip()
+        base_url = str(cfg.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
         if token:
             try:
                 boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
-                # 实时同步最新住宅IP到本地DNS映射，确保后续所有SSH诊断命令立即可用
-                raw_host = str(config.get("remote_ssh_host") or "").strip()
+                raw_host = str(cfg.get("remote_ssh_host") or "").strip()
                 if raw_host and boil_ip:
                     set_cached_host_ip(raw_host, boil_ip)
 
                 lines = [
-                    "【Boil 模式当前住宅IP】",
+                    f"【{sname} (Boil住宅)】",
                     f"- IPv4 地址: {boil_ip}",
                 ]
-
-                ssh_enabled = is_remote_ssh_enabled()
-                ssh_fn = run_remote_ssh_command if ssh_enabled else None
-
-                # 动态解析国内电信直连节点
                 v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
-
-                # 探测 IPv4 境内连通性 (带3次重试与超时)
                 ok4, desc4, _ = await asyncio.to_thread(
                     probe_domestic_http,
                     v4_target,
@@ -63,12 +59,12 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc4}")
 
-                # 检测公网 IPv6
                 if ssh_enabled:
                     code_v6, out_v6 = await asyncio.to_thread(
                         run_remote_ssh_command,
                         "curl -6 -s --connect-timeout 3 -m 5 https://api64.ipify.org",
                         timeout=8,
+                        server_config=cfg,
                     )
                     v6_ip = out_v6.strip() if (code_v6 == 0 and ":" in out_v6) else ""
                 else:
@@ -102,30 +98,18 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lines.append("- IPv6 地址: 未分配 / 不支持")
 
                 lines.append("- 状态: 正常（通过 Boil 官方 API 获取）")
-                lines.append("- 提示: 如需更换，可使用 /change 命令")
-                await update.message.reply_text(text="\n".join(lines))
-                return
+                return "\n".join(lines)
             except Exception as e:
-                await update.message.reply_text(text=f"通过 Boil API 获取IP失败: {e}")
-                return
+                return f"【{sname}】通过 Boil API 获取IP失败: {e}"
 
-    # Classic 模式
+    # Generic & Fachost 模式
     try:
-        ssh_enabled = is_remote_ssh_enabled()
-        ssh_fn = run_remote_ssh_command if ssh_enabled else None
-
-        if ssh_enabled:
-            code_v4, out_v4 = await asyncio.to_thread(
-                run_remote_ssh_command,
-                "curl -4 -s --connect-timeout 3 -m 5 https://api.ipify.org",
-                timeout=8,
-            )
-            current_v4 = out_v4.strip() if code_v4 == 0 else "未知"
-        else:
-            current_v4 = await asyncio.to_thread(get_current_ip)
+        from services.ip_change_service import get_active_public_ipv4
+        current_v4 = await asyncio.to_thread(get_active_public_ipv4, 8, cfg)
+        if not current_v4:
+            current_v4 = "未知"
 
         v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
-
         ok4, desc4, _ = await asyncio.to_thread(
             probe_domestic_http,
             v4_target,
@@ -141,6 +125,7 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 run_remote_ssh_command,
                 "curl -6 -s --connect-timeout 3 -m 5 https://api64.ipify.org",
                 timeout=8,
+                server_config=cfg,
             )
             v6_ip = out_v6.strip() if (code_v6 == 0 and ":" in out_v6) else ""
         else:
@@ -158,8 +143,9 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return ""
             v6_ip = await asyncio.to_thread(_get_local_v6_classic)
 
+        mode_desc = "Fachost 专用模式" if provider in ("fachost", "classic") else "Generic 通用模式"
         lines = [
-            "【当前IP状态】",
+            f"【{sname} ({mode_desc})】",
             f"- IPv4 地址: {current_v4}",
             f"  • 境内连通性 (v.qq.com 电信): {desc4}",
         ]
@@ -179,7 +165,37 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines.append("- IPv6 地址: 未分配 / 不支持")
 
-        lines.append("- 提示: 如需更换，可使用 /change 命令")
-        await update.message.reply_text(text="\n".join(lines))
+        return "\n".join(lines)
     except Exception as e:
-        await update.message.reply_text(text=f"检查IP状态时出错: {str(e)}")
+        return f"【{sname}】检查IP状态时出错: {e}"
+
+
+async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_permission(update):
+        return
+
+    user_id = update.effective_user.id if update.effective_user else 0
+    logger.info(f"收到 check 命令，用户ID: {user_id}")
+
+    server_cfg, is_all, prompt_shown = await resolve_target_server(update, context, "check", allow_all=True)
+    if prompt_shown:
+        return
+
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not msg:
+        return
+
+    status_msg = await msg.reply_text(text="正在检查IP与境内连通性...")
+
+    if is_all:
+        servers = get_servers()
+        tasks = [do_check_single_server(s) for s in servers]
+        results = await asyncio.gather(*tasks)
+        final_text = "🌐【所有服务器 IP 状态总览】\n\n" + "\n\n".join(results)
+        await status_msg.edit_text(text=final_text)
+    else:
+        result = await do_check_single_server(server_cfg)
+        hint = ""
+        if is_multi_server_mode():
+            hint = f"\n\n💡 提示: 当前操作服务器为 [{server_cfg.get('name', server_cfg.get('id'))}]，输入 /servers 查看列表，/use 切换"
+        await status_msg.edit_text(text=result + hint)

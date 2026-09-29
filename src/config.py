@@ -1,6 +1,6 @@
 import os
 import yaml
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 DEFAULT_CONFIG = {
     "telegram_allowed_user_ids": "",
@@ -136,8 +136,79 @@ def load_config() -> Dict[str, Any]:
     return config
 
 
+def normalize_server_config(server_raw: Dict[str, Any], global_cfg: Dict[str, Any], default_id: str = "default") -> Dict[str, Any]:
+    merged = {**global_cfg, **server_raw}
+    s_id = str(server_raw.get("id") or default_id).strip()
+    s_name = str(server_raw.get("name") or s_id).strip()
+    merged["id"] = s_id
+    merged["name"] = s_name
+
+    valid_providers = ("generic", "fachost", "boil", "classic")
+    raw_provider = str(merged.get("ip_change_provider") or "generic").strip().lower()
+    if raw_provider == "classic":
+        merged["ip_change_provider"] = "fachost"
+    elif raw_provider in valid_providers:
+        merged["ip_change_provider"] = raw_provider
+    else:
+        merged["ip_change_provider"] = "generic"
+
+    merged["remote_ssh_enabled"] = _to_bool(merged.get("remote_ssh_enabled"))
+    merged["ip_change_verify_public_ip"] = _to_bool(merged.get("ip_change_verify_public_ip"))
+    merged["auto_change_enabled"] = _to_bool(merged.get("auto_change_enabled"))
+    merged["auto_change_notify"] = _to_bool(merged.get("auto_change_notify"))
+    merged["auto_change_quality_report"] = _to_bool(merged.get("auto_change_quality_report"))
+    merged["dns_update_enabled"] = _to_bool(merged.get("dns_update_enabled"))
+    merged["cloudflare_proxied"] = _to_bool(merged.get("cloudflare_proxied"))
+    merged["huawei_dns_enabled"] = _to_bool(merged.get("huawei_dns_enabled"))
+    merged["ip_quality_enabled"] = _to_bool(merged.get("ip_quality_enabled"))
+    merged["stream_check_enabled"] = _to_bool(merged.get("stream_check_enabled"))
+    return merged
+
+
+def get_servers(cfg: Optional[Dict[str, Any]] = None) -> list[Dict[str, Any]]:
+    target_cfg = cfg if cfg is not None else config
+    raw_servers = target_cfg.get("servers")
+    if isinstance(raw_servers, list) and len(raw_servers) > 0:
+        res = []
+        for idx, item in enumerate(raw_servers):
+            if isinstance(item, dict):
+                norm = normalize_server_config(item, target_cfg, default_id=f"server_{idx + 1}")
+                res.append(norm)
+        if res:
+            return res
+
+    # 兼容单服务器旧配置
+    single_raw = {
+        "id": str(target_cfg.get("default_server_id") or "default").strip(),
+        "name": str(target_cfg.get("default_server_name") or "默认服务器").strip(),
+    }
+    return [normalize_server_config(single_raw, target_cfg, default_id="default")]
+
+
+def get_server_config(server_id: Optional[str] = None, cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    servers = get_servers(cfg)
+    if not servers:
+        return None
+    if not server_id:
+        return servers[0]
+
+    clean_id = str(server_id).strip().lower()
+    for s in servers:
+        if s.get("id", "").strip().lower() == clean_id:
+            return s
+    for s in servers:
+        if s.get("name", "").strip().lower() == clean_id:
+            return s
+    return None
+
+
+def is_multi_server_mode(cfg: Optional[Dict[str, Any]] = None) -> bool:
+    return len(get_servers(cfg)) > 1
+
+
 try:
     config = load_config()
 except FileNotFoundError:
     config = {**DEFAULT_CONFIG, "_loaded_from": None}
+
 
