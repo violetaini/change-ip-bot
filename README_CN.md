@@ -18,6 +18,13 @@
 
 ---
 
+- 📖 **[详细配置指南与最佳实践 (docs/CONFIGURATION_CN.md)](docs/CONFIGURATION_CN.md)**
+- ⚡ **[快速安装与部署说明](#-快速开始)**
+- 🤖 **[Telegram 完整命令列表](#-telegram-命令一览)**
+- 🗑️ **[卸载与服务清理说明](#️-卸载与完全清理)**
+
+---
+
 ## 📖 项目简介
 
 **VPS IP Bot** 是一款面向 VPS 代理服务器与住宅家宽（PPPoE 动态拨号主机）的 Telegram 全功能自动化运维管理机器人。
@@ -169,6 +176,10 @@ pip install -r requirements.txt
 ```
 
 ### 3. 配置参数
+
+> [!TIP]
+> 完整参数深度解析、8 大云厂商 DNS 专属密钥配置及客户端防刷保护说明，请参阅：
+> 👉 **[详细配置指南与最佳实践 (docs/CONFIGURATION_CN.md)](docs/CONFIGURATION_CN.md)**
 
 复制配置模版：
 

@@ -18,6 +18,13 @@
 
 ---
 
+- 📖 **[Detailed Configuration Guide & Reference (docs/CONFIGURATION.md)](docs/CONFIGURATION.md)**
+- ⚡ **[Quick Start & Installation](#-quick-start)**
+- 🤖 **[Telegram Command Reference](#-command-reference)**
+- 🗑️ **[Uninstallation & Service Cleanup](#️-uninstallation)**
+
+---
+
 ## 📖 Overview
 
 **VPS IP Bot** is an enterprise-grade Telegram automation bot engineered for VPS proxy servers and dynamic residential broadband (PPPoE redial nodes).
@@ -169,6 +176,10 @@ pip install -r requirements.txt
 ```
 
 ### 3. Configuration
+
+> [!TIP]
+> For comprehensive parameter explanations, 8 DNS cloud providers setups, and anti-abuse cooldown mechanisms, please see:
+> 👉 **[Detailed Configuration Guide & Reference (docs/CONFIGURATION.md)](docs/CONFIGURATION.md)**
 
 Copy the example configuration:
 
