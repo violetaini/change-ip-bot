@@ -38,9 +38,10 @@
 
 ## ✨ 核心特性
 
-- 🔄 **双模式换 IP 架构**：
-  - **经典模式 (Classic)**：无缝对接自建 VPS 控制面板或第三方 HTTP 换 IP 接口。
-  - **Boil Network 住宅家宽模式 (Boil)**：官方 API 直连集成（`changeIP` 换 IP & `getIP` 静默查 IP）。
+- 🔄 **三模式换 IP 架构 (Triple-Engine Architecture)**：
+  - **通用模式 (`generic`，默认推荐)**：发起换 IP API 请求（支持各类软路由 Webhook、重拨脚本、控制台 URL），随后自动通过 `curl -4 ip.sb` 轮询获取新 IP，不强制接口返回特定格式，适用面最广。
+  - **Fachost 专用模式 (`fachost` / `classic`)**：专为 **Fachost** 动态 VPS 控制面板定制，精准解析响应 JSON（`status: "IP changed"`, `new_ip`）及出口双重校验。
+  - **Boil Network 住宅家宽模式 (`boil`)**：官方 API 直连集成（`changeIP` 换 IP & `getIP` 静默查 IP），自带客户端冷却守护与每日配额追踪。
 - 🛡️ **客户端配额与冷却守护 (Cooldown Protection)**：
   - 智能记录并严格校验 Boil 服务端 `next_allowed_at` 冷却时间戳，客户端侧拦截提前误触，杜绝浪费宝贵的每日换 IP 次数。
 - 🌐 **多主流云厂商 DNS 自动化同步**：
@@ -84,7 +85,7 @@
                        ▼                 ▼
           ┌──────────────────────┐  ┌─────────────────────────────────┐
           │  Boil Network API    │  │  Cloudflare / 华为云 / 阿里云   │
-          │  自建 VPS 换 IP 面板 │  │  DNSPod / GoDaddy / Porkbun 等  │
+          │  Fachost / 通用 API  │  │  DNSPod / GoDaddy / Porkbun 等  │
           └──────────────────────┘  └─────────────────────────────────┘
                        │ (PPPoE 重新拨号)
                        ▼
@@ -101,18 +102,21 @@
 
 ## 🔄 换 IP 模式与部署架构选型
 
-系统支持两种截然不同的换 IP 驱动引擎，适应不同的部署环境：
+系统支持三种换 IP 驱动引擎，适应不同的部署环境：
 
-### 1. 经典模式 (Classic) —— 特别适配 Fachost 等动态 VPS / 软路由
-- **换 IP 机制**：调用本地或局域网换 IP 接口（如 Fachost 面板 API、路由器 WebHook 或本机断线重拨脚本）。
-- **IP 校验闭环**：换 IP 成功后，由 Bot 所在宿主机直接获取本地出口 IP（`ipify` 等）校验 IP 是否已切实变更。
-- **部署位置**：**必须/推荐直接安装在换 IP 机器本机**。
-  - *原因*：外部第三方服务器无法直连你的局域网/本机换 IP 脚本；且第三方服务器自身出口 IP 恒定，无法感知家宽 IP 变化。
-- **SSH 状态**：保持关闭（`remote_ssh_enabled: false`，默认值），本地纯单机闭环，免配任何 SSH 凭据。
+### 1. 通用模式 (`generic`，默认推荐) —— 适用任意自建脚本/软路由
+- **换 IP 机制**：向用户配置的 `ip_change_api` 发起 GET 请求（如软路由重连 URL、自定义 Webhook、面板重拨接口），对接口返回格式**无任何要求**。
+- **获取新 IP 机制**：API 触发后，Bot 自动在后台通过 `curl -4 ip.sb`（多轮重试轮询）主动探测并捕获最新的公网 IPv4 出口，完成新 IP 确认与 DNS 自动同步。
+- **部署位置**：直接安装在目标机本机（关闭 SSH）或安装在第三方独立服务器（开启 SSH 代理执行 `curl -4 ip.sb`）。
 
-### 2. Boil 优化模式 (Boil Network) —— 专为 Boil 住宅宽带深度定制
+### 2. Fachost 专用模式 (`fachost` / `classic`) —— 专为 Fachost 动态 VPS 定制
+- **换 IP 机制**：向 Fachost 控制面板的换 IP API 发起请求。
+- **获取新 IP 机制**：直接解析服务端返回的特定 JSON 数据体（提取 `new_ip` 与 `status == "IP changed"`），并带有双重校验与超时出口轮询兜底。
+- **部署位置**：**必须/推荐直接安装在换 IP 机器本机**（保持 `remote_ssh_enabled: false`）。
+
+### 3. Boil 优化模式 (`boil`) —— 专为 Boil 住宅宽带深度定制
 - **换 IP 机制**：由 Bot 请求 **Boil 官方公网云端 REST API** (`https://ippanel.boil.network`)，下发换 IP 任务。
-- **IP 校验闭环**：换 IP 后直接向 Boil 云端接口轮询新分配的 IP，**完全不依赖 Bot 宿主机的本地出口**。
+- **获取新 IP 机制**：换 IP 后直接向 Boil 云端控制台轮询新分配的 IP，**完全不依赖本地出口**。
 - **部署位置**：**天然支持部署在第三方独立海外 VPS 上**（推荐架构）。
   - *架构优势*：将 Bot 部署在稳定的海外 VPS 上，24 小时保持在线（避免家宽断网导致 Bot 失联）；通过可选的远程 SSH 直连家宽节点，在测速、流媒体解锁、IP 质量检测时借道家宽物理出口，实现“云端控制中枢 + 家宽物理执行”的轻重分离。
 - **SSH 状态**：装在第三方 VPS 时开启（`remote_ssh_enabled: true`）；若直接装在家宽本机，亦可关闭 SSH 纯本地运行。
@@ -121,7 +125,8 @@
 
 | 部署位置 | 适用服务商 / 机器类型 | 推荐换 IP 模式 | SSH 状态 (`remote_ssh_enabled`) | 运行逻辑与架构特点 |
 | :--- | :--- | :--- | :---: | :--- |
-| **直接安装在换 IP 机器本机** | **Fachost** / 自建软路由 / 拨号主机 | **经典模式 (`classic`)** 或 Boil | **关闭** (`false`) | 单机本地闭环执行，无需 SSH 密钥与端口映射。 |
+| **直接安装在换 IP 机器本机** | **通用软路由** / 拨号主机 | **通用模式 (`generic`)** | **关闭** (`false`) | 触发 API 后本地调用 `curl -4 ip.sb` 轮询，完全单机闭环。 |
+| **直接安装在动态 VPS 本机** | **Fachost** 动态 VPS | **Fachost 模式 (`fachost`)** | **关闭** (`false`) | 直接解析 Fachost 面板 JSON 响应与出口核验。 |
 | **安装在第三方独立服务器** | **Boil Network** 住宅宽带 | **Boil 模式 (`boil`)** | **开启** (`true`) | 换 IP 走云端 API，网络测试走 SSH 穿透，控制端与家宽解耦。 |
 
 ---
@@ -139,9 +144,9 @@
 | `/ping` | `[-4/-6] [目标] [-c 次数]` | 管理员 | 测试网络延迟，支持指定目标、次数或直接输入 IPv6 |
 | `/speedtest`| 无 | 管理员 | 交互式选择节点进行 Ookla 测速，展示出口 IP 栈类型 |
 | `/health` | 无 | 管理员 | 检查 Bot 所在系统 CPU、内存、磁盘及依赖就绪状态 |
-| `/set_ip_mode` | `[classic / boil]` | 超级管理员 | 交互式切换换 IP 模式（经典 HTTP API / Boil 住宅网络） |
+| `/set_ip_mode` | `[generic/fachost/boil]` | 超级管理员 | 交互式切换换 IP 模式（通用 / Fachost / Boil） |
 | `/set_boil_token`| `<token>` | 超级管理员 | 在线设置并热重载 Boil API Token |
-| `/set_ip_api` | `<url>` | 超级管理员 | 在线设置经典模式换 IP 请求接口 URL |
+| `/set_ip_api` | `<url>` | 超级管理员 | 在线设置换 IP 请求接口 URL |
 | `/auto_start` | 无 | 超级管理员 | 开启每日定时自动换 IP 任务 |
 | `/auto_stop` | 无 | 超级管理员 | 关闭每日定时自动换 IP 任务 |
 | `/auto_status`| 无 | 管理员 | 查看自动换 IP 运行状态及下次执行时间 |

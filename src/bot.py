@@ -75,9 +75,9 @@ BOT_COMMANDS = [
     BotCommand("check", "检查当前IP状态"),
     BotCommand("change", "更换IP并同步DNS"),
     BotCommand("ip_status", "查看换IP配置与冷却状态"),
-    BotCommand("set_ip_mode", "切换换IP模式(经典/Boil)"),
+    BotCommand("set_ip_mode", "切换换IP模式(通用/Fachost/Boil)"),
     BotCommand("set_boil_token", "设置Boil API Token"),
-    BotCommand("set_ip_api", "设置经典模式换IP接口URL"),
+    BotCommand("set_ip_api", "设置换IP接口URL"),
     BotCommand("auto_start", "启用自动换IP"),
     BotCommand("auto_stop", "关闭自动换IP"),
     BotCommand("auto_status", "查看自动换IP状态"),
@@ -197,9 +197,9 @@ class VPSChangeIPBot:
             "/check - 检查当前IP状态\n"
             "/change - 更换IP并同步DNS\n"
             "/ip_status - 查看换IP配置与冷却状态\n"
-            "/set_ip_mode - 切换换IP模式(经典/Boil)（超级管理员）\n"
+            "/set_ip_mode - 切换换IP模式(通用/Fachost/Boil)（超级管理员）\n"
             "/set_boil_token TOKEN - 设置Boil API Token（超级管理员）\n"
-            "/set_ip_api URL - 设置经典模式换IP接口URL（超级管理员）\n"
+            "/set_ip_api URL - 设置换IP接口URL（超级管理员）\n"
             "/auto_start - 启用自动换IP（超级管理员）\n"
             "/auto_stop - 关闭自动换IP（超级管理员）\n"
             "/auto_status - 查看自动换IP状态\n"
@@ -1027,8 +1027,14 @@ class VPSChangeIPBot:
         if not await check_user_permission(update):
             return
 
-        provider = str(config.get("ip_change_provider", "classic")).strip().lower()
-        lines = [f"换IP当前模式: {'Boil Network' if provider == 'boil' else '经典通用API模式'}"]
+        provider = str(config.get("ip_change_provider", "generic")).strip().lower()
+        if provider == "boil":
+            mode_name = "Boil Network 住宅模式"
+        elif provider in ("fachost", "classic"):
+            mode_name = "Fachost 专用模式 (解析响应 JSON)"
+        else:
+            mode_name = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
+        lines = [f"换IP当前模式: {mode_name} ({provider})"]
 
         state = load_state()
         if provider == "boil":
@@ -1074,31 +1080,46 @@ class VPSChangeIPBot:
 
         if context.args:
             target = context.args[0].strip().lower()
-            if target not in ("classic", "boil"):
-                await update.message.reply_text("无效的模式，只支持 classic (经典模式) 或 boil (Boil Network 模式)。")
+            if target == "classic":
+                target = "fachost"
+            if target not in ("generic", "fachost", "boil"):
+                await update.message.reply_text("无效的模式，支持: generic (通用模式), fachost (Fachost专用), boil (Boil Network)")
                 return
 
             try:
                 config["ip_change_provider"] = target
                 persist_config_value("ip_change_provider", target)
-                mode_desc = "Boil Network 模式" if target == "boil" else "经典通用API模式"
+                if target == "boil":
+                    mode_desc = "Boil Network 住宅模式"
+                elif target == "fachost":
+                    mode_desc = "Fachost 专用模式 (解析响应 JSON)"
+                else:
+                    mode_desc = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
                 await update.message.reply_text(f"已切换换IP模式为: {mode_desc} ({target})")
             except Exception as e:
                 logger.exception(f"切换换IP模式失败: {e}")
                 await update.message.reply_text(f"切换换IP模式失败: {redact_text(str(e))}")
             return
 
-        current = str(config.get("ip_change_provider", "classic")).strip().lower()
+        current = str(config.get("ip_change_provider", "generic")).strip().lower()
+        if current == "classic":
+            current = "fachost"
         keyboard = [
             [
                 InlineKeyboardButton(
-                    f"{'✅ ' if current == 'classic' else ''}经典通用模式 (classic)",
-                    callback_data="set_ip_mode:classic",
+                    f"{'✅ ' if current == 'generic' else ''}通用 API 模式 (generic - 推荐，curl -4 ip.sb 轮询)",
+                    callback_data="set_ip_mode:generic",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    f"{'✅ ' if current == 'boil' else ''}Boil Network 模式 (boil)",
+                    f"{'✅ ' if current in ('fachost', 'classic') else ''}Fachost 专用模式 (fachost - 解析响应 JSON)",
+                    callback_data="set_ip_mode:fachost",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"{'✅ ' if current == 'boil' else ''}Boil Network 住宅模式 (boil - 官方云端 API)",
                     callback_data="set_ip_mode:boil",
                 )
             ],
@@ -1116,13 +1137,20 @@ class VPSChangeIPBot:
         await query.answer()
 
         target = (query.data or "").split(":", 1)[1].strip().lower()
-        if target not in ("classic", "boil"):
+        if target == "classic":
+            target = "fachost"
+        if target not in ("generic", "fachost", "boil"):
             return
 
         try:
             config["ip_change_provider"] = target
             persist_config_value("ip_change_provider", target)
-            mode_desc = "Boil Network 模式" if target == "boil" else "经典通用API模式"
+            if target == "boil":
+                mode_desc = "Boil Network 住宅模式"
+            elif target == "fachost":
+                mode_desc = "Fachost 专用模式 (解析响应 JSON)"
+            else:
+                mode_desc = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
             await query.edit_message_text(f"已成功切换换IP模式为: {mode_desc} ({target})")
         except Exception as e:
             logger.exception(f"切换换IP模式失败: {e}")

@@ -60,10 +60,49 @@ telegram_admin_user_ids: "11223344,55667788"
 系统通过 `ip_change_provider` 参数切换换 IP 驱动引擎：
 
 ```yaml
-ip_change_provider: "boil" # 可选: boil 或 classic
+ip_change_provider: "generic" # 可选: generic (通用推荐), fachost (Fachost面板), boil (Boil住宅), classic (等同于fachost)
 ```
 
-### A. Boil Network 住宅家宽模式
+### A. 通用 API 模式 (`generic`，默认推荐)
+
+适用于任意软路由（OpenWrt/RouterOS 等 Webhook）、断线重拨脚本、自建面板或第三方换 IP 接口：
+
+```yaml
+ip_change_provider: "generic"
+ip_change_api: "http://127.0.0.1:8080/reconnect"
+ip_change_interval: 2
+ip_change_timeout: 60
+ip_change_poll_retries: 18 # 探测重试次数（默认18次）
+ip_change_poll_delay: 5    # 探测间隔秒数（默认5秒，最多等待90秒）
+```
+
+* **工作流程**：
+  1. 换 IP 前自动记录当前出口 IPv4。
+  2. 发起 GET 请求至 `ip_change_api`（对接口返回体**无任何格式要求**，无论返回 HTML、纯文本、空数据或网卡重启导致中断均可）。
+  3. 通过 `curl -4 ip.sb`（多轮轮询）主动探测并捕获最新的公网出口 IP。
+  4. 确认 IP 发生变化后，自动执行多平台 DNS 动态同步。
+
+### B. Fachost 专用模式 (`fachost` / `classic`)
+
+专为 **Fachost** 动态 VPS 控制面板定制开发：
+
+```yaml
+ip_change_provider: "fachost"
+ip_change_api: "https://your-panel.fachost.example.com/api/change-ip?token=secret123"
+ip_change_interval: 2
+ip_change_timeout: 600
+ip_change_verify_public_ip: true
+ip_change_verify_delay: 5
+ip_change_retry_verify_count: 3
+```
+
+* **工作流程**：
+  1. 向 Fachost 控制面板发起请求。
+  2. 精准解析服务端返回的 JSON 数据（要求 `status: "IP changed"`，并从中提取 `new_ip`）。
+  3. 支持出口 IP 校验（`ip_change_verify_public_ip: true`）与请求超时兜底轮询。
+* **部署建议**：推荐直接部署在 Fachost VPS 本机，`remote_ssh_enabled: false`。
+
+### C. Boil Network 住宅家宽模式 (`boil`)
 
 专为 **Boil Network** 住宅宽带控制台量身定制的官方直连驱动：
 
@@ -81,28 +120,6 @@ boil_api_token: "your_boil_api_token_here"
   2. `/change` 更换 IP：请求 `POST /api/v1/changeIP`。
   3. **客户端冷却守护 (`COOLDOWN_PROTECTION`)**：接口返回的 `next_allowed_at` 时间戳会被本地持久化。若用户在冷却期内误点换 IP，Bot 会在本地直接拦截并提示剩余冷却秒数，**彻底杜绝因提前请求被服务商惩罚扣除额外配额**。
   4. 自动提取服务端返回的 `uses_left`（当日剩余可用次数），直观展示在状态报告中。
-
-### B. 经典自建 HTTP API 模式 (特别适配 Fachost)
-
-特别适配 **Fachost** 等动态 VPS 服务商、自建 VPS 控制面板或各类软路由/光猫拨号脚本接口：
-
-```yaml
-ip_change_provider: "classic"
-ip_change_api: "https://your-panel.example.com/api/change-ip?token=secret123"
-ip_change_interval: 2
-ip_change_timeout: 600
-ip_change_verify_public_ip: true
-ip_change_verify_delay: 5
-ip_change_retry_verify_count: 3
-```
-
-* **部署位置要求**：**必须/推荐直接安装在换 IP 机器本机**。
-  - 经典模式换 IP 通常依赖本机/局域网脚本，且换 IP 后靠**本地出口 IP**确认变更。
-  - 此时务必保持 `remote_ssh_enabled: false`（默认值），Bot 纯单机本地闭环运行，无需任何 SSH 凭证。
-* **参数解析**：
-  * `ip_change_api`：换 IP 触发 GET 请求接口（如 Fachost 面板 API 或本机重拨接口）。接口应返回 JSON，推荐格式：`{"status": "IP changed", "old_ip": "1.1.1.1", "new_ip": "2.2.2.2"}`。
-  * `ip_change_interval`：本地防刷冷却时间（分钟，默认 2 分钟）。
-  * `ip_change_verify_public_ip`：换 IP 成功后，是否通过公共 IP 接口轮询校验公网出口确实已发生变更。
 
 ---
 

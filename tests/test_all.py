@@ -48,7 +48,7 @@ class TestConfigAndRedact(unittest.TestCase):
         self.assertIn("remote_ssh_enabled", DEFAULT_CONFIG)
         self.assertIn("remote_ssh_host", DEFAULT_CONFIG)
         self.assertIn("remote_ssh_port", DEFAULT_CONFIG)
-        self.assertEqual(DEFAULT_CONFIG["ip_change_provider"], "classic")
+        self.assertEqual(DEFAULT_CONFIG["ip_change_provider"], "generic")
         self.assertFalse(DEFAULT_CONFIG["remote_ssh_enabled"])
 
     def test_redact_sensitive_tokens(self):
@@ -219,6 +219,55 @@ class TestIPChangeService(unittest.IsolatedAsyncioTestCase):
 
         st = load_state()
         self.assertEqual(st.get("boil_uses_left"), 3)
+
+    @patch("requests.get")
+    @patch("services.ip_change_service.get_active_public_ipv4")
+    @patch("services.ip_change_service._update_dns_safely")
+    async def test_generic_mode_success_flow(self, mock_dns, mock_get_ip, mock_get_req):
+        from config import config
+        config["ip_change_provider"] = "generic"
+        config["ip_change_api"] = "http://127.0.0.1:8080/reconnect"
+        config["ip_change_interval"] = 0
+        config["ip_change_poll_retries"] = 3
+        config["ip_change_poll_delay"] = 0
+
+        # First call is pre-check (1.1.1.1), second call is polling (2.2.2.2)
+        mock_get_ip.side_effect = ["1.1.1.1", "2.2.2.2"]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "OK"
+        mock_get_req.return_value = mock_resp
+        mock_dns.return_value = "DNS OK"
+
+        result = await perform_ip_change(trigger="test")
+        self.assertTrue(result.success)
+        self.assertEqual(result.status, "IP_CHANGED")
+        self.assertEqual(result.old_ip, "1.1.1.1")
+        self.assertEqual(result.new_ip, "2.2.2.2")
+        self.assertIn("curl -4 ip.sb", result.message)
+
+    @patch("services.ip_change_service.call_change_ip_api")
+    @patch("services.ip_change_service._verify_changed_ip")
+    @patch("services.ip_change_service._update_dns_safely")
+    async def test_fachost_mode_success_flow(self, mock_dns, mock_verify, mock_api):
+        from config import config
+        config["ip_change_provider"] = "fachost"
+        config["ip_change_api"] = "http://127.0.0.1:8080/change_ip"
+        config["ip_change_interval"] = 0
+
+        mock_api.return_value = {
+            "status": "IP changed",
+            "old_ip": "1.1.1.1",
+            "new_ip": "2.2.2.2",
+        }
+        mock_verify.return_value = True
+        mock_dns.return_value = "DNS OK"
+
+        result = await perform_ip_change(trigger="test")
+        self.assertTrue(result.success)
+        self.assertEqual(result.status, "IP changed")
+        self.assertEqual(result.new_ip, "2.2.2.2")
+        self.assertEqual(result.old_ip, "1.1.1.1")
 
 
 class TestBotHelpers(unittest.TestCase):

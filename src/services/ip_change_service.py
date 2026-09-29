@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import requests
+
 from config import config
 from services.dns_update_service import update_dns_if_enabled
 from utils.logger import logger
@@ -13,10 +15,12 @@ from utils.network import (
     call_boil_get_ip,
     call_change_ip_api,
     get_current_ip,
+    is_valid_ipv4,
     parse_change_ip_result,
     verify_public_ip_matches,
 )
 from utils.redact import redact_text
+from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
 from utils.state import (
     get_last_change_time,
     load_state,
@@ -129,11 +133,144 @@ def _update_dns_safely(new_ip: str) -> str:
         return dns_message
 
 
+def get_active_public_ipv4(timeout: int = 8) -> str:
+    """获取当前目标的公网 IPv4 地址。若启用远程 SSH 则在目标机执行，否则在本地执行。优先使用 curl -4 ip.sb"""
+    if is_remote_ssh_enabled():
+        try:
+            cmd = "curl -4 -s --connect-timeout 4 -m 6 api-ipv4.ip.sb/ip || curl -4 -s --connect-timeout 4 -m 6 https://api.ipify.org"
+            code, out = run_remote_ssh_command(cmd, timeout=timeout + 4)
+            if code == 0:
+                for line in reversed(out.strip().splitlines()):
+                    candidate = line.strip()
+                    if is_valid_ipv4(candidate):
+                        return candidate
+        except Exception as e:
+            logger.debug(f"SSH 获取公网 IPv4 异常: {e}")
+        return ""
+
+    import subprocess
+    # 本地执行 curl -4 -s api-ipv4.ip.sb/ip
+    try:
+        res = subprocess.run(
+            ["curl", "-4", "-s", "--connect-timeout", "4", "-m", "6", "api-ipv4.ip.sb/ip"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        for line in reversed(res.stdout.strip().splitlines()):
+            candidate = line.strip()
+            if is_valid_ipv4(candidate):
+                return candidate
+    except Exception:
+        pass
+
+    # 本地执行备用源
+    try:
+        res = subprocess.run(
+            ["curl", "-4", "-s", "--connect-timeout", "4", "-m", "6", "https://api.ipify.org"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        for line in reversed(res.stdout.strip().splitlines()):
+            candidate = line.strip()
+            if is_valid_ipv4(candidate):
+                return candidate
+    except Exception:
+        pass
+
+    try:
+        ip = get_current_ip()
+        if is_valid_ipv4(ip):
+            return ip
+    except Exception:
+        pass
+    return ""
+
+
 def get_ip_change_provider_name() -> str:
-    return str(config.get("ip_change_provider") or "classic").strip().lower()
+    p = str(config.get("ip_change_provider") or "generic").strip().lower()
+    if p == "classic":
+        return "fachost"
+    return p
 
 
-async def _perform_classic_ip_change(trigger: str = "manual") -> ChangeResult:
+async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
+    interval_error = _check_interval()
+    if interval_error:
+        return ChangeResult(
+            success=False,
+            status="RATE_LIMITED",
+            message=interval_error,
+            trigger=trigger,
+        )
+
+    api_url = str(config.get("ip_change_api", "")).strip()
+    if not api_url:
+        return ChangeResult(
+            success=False,
+            status="CONFIG_ERROR",
+            message="未配置 ip_change_api",
+            trigger=trigger,
+        )
+
+    # 1. 换 IP 前记录旧 IP
+    old_ip = await asyncio.to_thread(get_active_public_ipv4)
+    logger.info(f"[Generic通用模式] 换IP前当前出口IP: {old_ip or '未知'}")
+
+    # 2. 触发通用换 IP API (发出 GET 请求，不强制要求特定的返回JSON格式)
+    timeout = int(config.get("ip_change_timeout", 60))
+    try:
+        def _trigger():
+            resp = requests.get(api_url, timeout=timeout)
+            return resp.status_code, resp.text[:200]
+        code, text = await asyncio.to_thread(_trigger)
+        logger.info(f"[Generic通用模式] 换IP API触发成功，响应 HTTP {code}: {redact_text(text)}")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"[Generic通用模式] 换IP API 请求断开或超时（通常因路由器/接口立即重启导致）: {e}")
+
+    # 3. 轮询探测新公网 IP (使用 curl -4 ip.sb 轮询)
+    poll_retries = int(config.get("ip_change_poll_retries", 18))
+    poll_delay = int(config.get("ip_change_poll_delay", 5))
+    new_ip = ""
+
+    for attempt in range(1, poll_retries + 1):
+        await asyncio.sleep(poll_delay)
+        curr = await asyncio.to_thread(get_active_public_ipv4)
+        logger.info(f"[Generic通用模式] 轮询探测新IP 第 {attempt}/{poll_retries} 次: {curr}")
+        if curr and is_valid_ipv4(curr):
+            if old_ip and curr != old_ip:
+                new_ip = curr
+                break
+            elif not old_ip:
+                new_ip = curr
+                break
+
+    if not new_ip:
+        return ChangeResult(
+            success=False,
+            status="TIMEOUT",
+            message=f"已触发换IP接口，但在 {poll_retries * poll_delay} 秒内未能检测到公网IP变化 (原IP: {old_ip or '未知'})",
+            old_ip=old_ip,
+            new_ip="",
+            trigger=trigger,
+        )
+
+    # 4. 更新 DNS
+    dns_message = await asyncio.to_thread(_update_dns_safely, new_ip)
+
+    return ChangeResult(
+        success=True,
+        status="IP_CHANGED",
+        message="已通过 curl -4 ip.sb 成功探测到新IP",
+        old_ip=old_ip,
+        new_ip=new_ip,
+        dns_message=dns_message,
+        trigger=trigger,
+    )
+
+
+async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
     interval_error = _check_interval()
     if interval_error:
         return ChangeResult(
@@ -338,11 +475,16 @@ async def _perform_boil_ip_change(trigger: str = "manual") -> ChangeResult:
     )
 
 
+_perform_classic_ip_change = _perform_fachost_ip_change
+
+
 async def perform_ip_change(trigger: str = "manual") -> ChangeResult:
     provider = get_ip_change_provider_name()
     if provider == "boil":
         return await _perform_boil_ip_change(trigger=trigger)
-    return await _perform_classic_ip_change(trigger=trigger)
+    elif provider == "generic":
+        return await _perform_generic_ip_change(trigger=trigger)
+    return await _perform_fachost_ip_change(trigger=trigger)
 
 
 

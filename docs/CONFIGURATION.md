@@ -60,10 +60,49 @@ telegram_admin_user_ids: "11223344,55667788"
 Select the provider engine via `ip_change_provider`:
 
 ```yaml
-ip_change_provider: "boil" # Options: boil or classic
+ip_change_provider: "generic" # Options: generic (recommended), fachost (Fachost panel), boil (Boil residential), classic (alias for fachost)
 ```
 
-### A. Boil Network Residential IP Mode
+### A. Generic API Mode (`generic`, Default & Recommended)
+
+Designed for arbitrary soft routers (OpenWrt/RouterOS webhooks), redial scripts, custom control panels, or generic change-IP APIs:
+
+```yaml
+ip_change_provider: "generic"
+ip_change_api: "http://127.0.0.1:8080/reconnect"
+ip_change_interval: 2
+ip_change_timeout: 60
+ip_change_poll_retries: 18 # Number of poll attempts (default: 18)
+ip_change_poll_delay: 5    # Delay between polls in seconds (default: 5s, total 90s)
+```
+
+* **Workflow**:
+  1. Records current external IPv4 prior to rotation.
+  2. Dispatches an HTTP GET request to `ip_change_api` (**zero response formatting requirements**; works even if connection drops due to interface restart).
+  3. Actively queries and polls `curl -4 ip.sb` to discover the new public egress IP.
+  4. Automatically synchronizes DNS records upon new IP verification.
+
+### B. Fachost Dedicated Mode (`fachost` / `classic`)
+
+Specially tailored for **Fachost** dynamic VPS control panels:
+
+```yaml
+ip_change_provider: "fachost"
+ip_change_api: "https://your-panel.fachost.example.com/api/change-ip?token=secret123"
+ip_change_interval: 2
+ip_change_timeout: 600
+ip_change_verify_public_ip: true
+ip_change_verify_delay: 5
+ip_change_retry_verify_count: 3
+```
+
+* **Workflow**:
+  1. Dispatches request to the Fachost control panel.
+  2. Parses the returned JSON payload (`status: "IP changed"`, `new_ip`).
+  3. Features host egress verification and timeout fallback polling.
+* **Deployment**: Recommended to install directly on the Fachost VPS (`remote_ssh_enabled: false`).
+
+### C. Boil Network Residential IP Mode (`boil`)
 
 Official API driver specifically engineered for **Boil Network** dynamic residential broadband:
 
@@ -81,28 +120,6 @@ boil_api_token: "your_boil_api_token_here"
   2. `/change`: Triggers `POST /api/v1/changeIP`.
   3. **Client-Side Cooldown Guard (`COOLDOWN_PROTECTION`)**: The API-returned `next_allowed_at` timestamp is persisted locally. If an IP change is attempted during cooldown, the bot blocks the request locally, **preventing accidental quota deduction penalties**.
   4. Automatically parses `uses_left` (remaining daily quota) and includes it in status summaries.
-
-### B. Classic Custom HTTP API Mode (Specially Optimized for Fachost)
-
-Engineered for **Fachost** dynamic VPS, custom VPS control panels, and soft router/modem redial scripts:
-
-```yaml
-ip_change_provider: "classic"
-ip_change_api: "https://your-panel.example.com/api/change-ip?token=secret123"
-ip_change_interval: 2
-ip_change_timeout: 600
-ip_change_verify_public_ip: true
-ip_change_verify_delay: 5
-ip_change_retry_verify_count: 3
-```
-
-* **Deployment Requirement**: **Must/Recommended to deploy locally on the target node itself**.
-  - Classic rotation relies on local/LAN endpoints, and verification checks the **local host egress IP**.
-  - Keep `remote_ssh_enabled: false` (default) for a 100% standalone local closed loop without SSH keys.
-* **Parameters**:
-  * `ip_change_api`: Endpoint for triggering IP rotation (e.g. Fachost panel API). Expected response JSON: `{"status": "IP changed", "old_ip": "1.1.1.1", "new_ip": "2.2.2.2"}`.
-  * `ip_change_interval`: Local cooldown period in minutes (default: 2 minutes).
-  * `ip_change_verify_public_ip`: Whether to verify external egress IP change via public APIs upon rotation.
 
 ---
 

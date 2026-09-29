@@ -38,9 +38,10 @@ It solves critical pain points in dynamic IP management: client-side quota & coo
 
 ## ✨ Key Features
 
-- 🔄 **Dual-Mode IP Switching Architecture**:
-  - **Classic Mode (`classic`)**: Seamlessly connects to custom VPS panel or provider HTTP change-IP APIs.
-  - **Boil Network Mode (`boil`)**: Direct official API integration for Boil Network residential IPs (`changeIP` & `getIP`).
+- 🔄 **Triple-Engine IP Switching Architecture**:
+  - **Generic Mode (`generic`, Default Recommended)**: Triggers any custom HTTP endpoint (soft router Webhook, redial script, or panel URL), then automatically polls and discovers the new IP via `curl -4 ip.sb`. Zero response format requirements.
+  - **Fachost Mode (`fachost` / `classic`)**: Tailored specifically for **Fachost** dynamic VPS panels. Accurately parses JSON responses (`status: "IP changed"`, `new_ip`) with egress verification and timeout fallback.
+  - **Boil Network Mode (`boil`)**: Direct official API integration for Boil Network residential IPs (`changeIP` & `getIP`), featuring client-side cooldown lock and quota monitoring.
 - 🛡️ **Client-Side Cooldown & Quota Guard**:
   - Validates Boil Network's server timestamp (`next_allowed_at`) locally. Intercepts premature requests before hitting the API, preventing wasted daily change quotas.
 - 🌐 **Multi-Provider Automated DNS Synchronization**:
@@ -84,7 +85,7 @@ It solves critical pain points in dynamic IP management: client-side quota & coo
                        ▼                 ▼
           ┌──────────────────────┐  ┌─────────────────────────────────┐
           │  Boil Network API    │  │  Cloudflare / Huawei / Aliyun   │
-          │  Custom VPS Panel    │  │  DNSPod / GoDaddy / Porkbun etc │
+          │  Fachost / Generic   │  │  DNSPod / GoDaddy / Porkbun etc │
           └──────────────────────┘  └─────────────────────────────────┘
                        │ (PPPoE Redial)
                        ▼
@@ -101,27 +102,31 @@ It solves critical pain points in dynamic IP management: client-side quota & coo
 
 ## 🔄 IP Switching Modes & Deployment Architecture
 
-The bot supports two distinct operational modes designed for different network topologies:
+The bot supports three distinct operational engines tailored for different infrastructure setups:
 
-### 1. Classic Mode (`classic`) —— Specially Optimized for Fachost / Dynamic VPS & Soft Routers
-- **Mechanism**: Calls a local or LAN HTTP endpoint (e.g. Fachost panel change-IP API, router WebHook, or local redial script).
-- **Verification Loop**: After triggering rotation, the bot queries public IP APIs (`ipify`, etc.) from the **host machine itself** to verify external IP change.
-- **Deployment Location**: **Must/Recommended to run locally on the node changing IP**.
-  - *Rationale*: External third-party servers cannot reach internal LAN endpoints directly, and a remote VPS's external IP remains static, causing IP change verification to fail.
-- **SSH Setting**: Keep disabled (`remote_ssh_enabled: false`, default). Everything executes locally with zero SSH configuration needed.
+### 1. Generic Mode (`generic`, Default Recommended) —— Universal for Soft Routers & Scripts
+- **Mechanism**: Calls the configured `ip_change_api` (GET request). Works with any router webhook, reconnection script, or panel trigger with **no payload requirements**.
+- **IP Discovery Loop**: After triggering, the bot actively polls `curl -4 ip.sb` to detect when the egress IPv4 changes, then automatically updates DNS.
+- **Deployment Location**: Can be installed directly on target host (SSH disabled) or on a remote VPS (SSH enabled).
 
-### 2. Boil Network Mode (`boil`) —— Deeply Integrated for Boil Residential Broadband
+### 2. Fachost Mode (`fachost` / `classic`) —— Tailored for Fachost Dynamic VPS
+- **Mechanism**: Calls the Fachost panel change-IP endpoint.
+- **IP Discovery Loop**: Directly parses the returned JSON payload (`status: "IP changed"`, `new_ip`), with egress verification and fallback polling.
+- **Deployment Location**: **Must/Recommended to run locally on the node changing IP** (`remote_ssh_enabled: false`).
+
+### 3. Boil Network Mode (`boil`) —— Deeply Integrated for Boil Residential Broadband
 - **Mechanism**: Calls **Boil Network's official public Cloud REST API** (`https://ippanel.boil.network`) directly to trigger rotation.
-- **Verification Loop**: Authoritative IP allocation is queried directly from Boil's cloud API, **completely independent of the bot host's local egress IP**.
+- **IP Discovery Loop**: Authoritative IP allocation is queried directly from Boil's cloud API, **completely independent of the bot host's local egress IP**.
 - **Deployment Location**: **Natively supports deployment on third-party standalone overseas VPS** (Recommended).
   - *Architectural Benefit*: Run the bot 24/7 on an ultra-stable cloud VPS (avoiding Telegram downtime when residential PPPoE resets). When running network tests (`/quality`, `/stream`, `/speedtest`), the bot tunnels commands via SSH into the residential node to measure real residential metrics.
 - **SSH Setting**: Enabled (`remote_ssh_enabled: true`) on remote VPS; can also be disabled (`false`) if installed directly on the residential node.
 
 ### Deployment Topology Comparison
 
-| Deployment Target | Recommended Provider / Machine | IP Change Mode | SSH State (`remote_ssh_enabled`) | Architectural Highlights |
+| Deployment Target | Target Node / Machine | Recommended Mode | SSH State (`remote_ssh_enabled`) | Architectural Highlights |
 | :--- | :--- | :---: | :---: | :--- |
-| **Installed Locally on Target Node** | **Fachost** / Soft Router / Local Host | **Classic (`classic`)** or Boil | **Disabled** (`false`) | 100% local closed loop, zero SSH keys or port mapping required. |
+| **Installed Locally on Target Node** | **Generic Soft Router** / Dialer | **Generic (`generic`)** | **Disabled** (`false`) | Triggers API and discovers new IP via local `curl -4 ip.sb`. |
+| **Installed Locally on Dynamic VPS** | **Fachost** Dynamic VPS | **Fachost (`fachost`)** | **Disabled** (`false`) | Parses Fachost JSON response + verifies local egress IP. |
 | **Installed on Independent VPS** | **Boil Network** Residential Host | **Boil (`boil`)** | **Enabled** (`true`) | Cloud-controlled rotation + SSH-tunneled network diagnostics. |
 
 ---
@@ -139,9 +144,9 @@ The bot supports two distinct operational modes designed for different network t
 | `/ping` | `[-4/-6] [target] [-c count]` | Admin | Test network latency with IPv4/IPv6 target auto-detection |
 | `/speedtest`| None | Admin | Interactive Ookla Speedtest with client egress IP & protocol stack |
 | `/health` | None | Admin | Check bot system CPU, memory, disk, and dependencies status |
-| `/set_ip_mode` | `[classic / boil]` | Super Admin | Switch IP change provider dynamically via buttons or arguments |
+| `/set_ip_mode` | `[generic/fachost/boil]` | Super Admin | Switch IP change provider dynamically via buttons or arguments |
 | `/set_boil_token`| `<token>` | Super Admin | Set and reload Boil API token |
-| `/set_ip_api` | `<url>` | Super Admin | Set Classic HTTP change-IP API endpoint URL |
+| `/set_ip_api` | `<url>` | Super Admin | Set change-IP API endpoint URL |
 | `/auto_start` | None | Super Admin | Enable daily scheduled automatic IP rotation |
 | `/auto_stop` | None | Super Admin | Disable daily scheduled automatic IP rotation |
 | `/auto_status`| None | Admin | View scheduled automatic change status and next trigger time |

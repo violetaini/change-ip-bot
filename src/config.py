@@ -10,8 +10,10 @@ DEFAULT_CONFIG = {
     "ip_check_api": "",
     "ip_check_timeout": 60,
     "state_file": "/var/lib/vps-ip-bot/state.json",
-    "ip_change_provider": "classic",
+    "ip_change_provider": "generic",
     "ip_change_api": "",
+    "ip_change_poll_retries": 18,
+    "ip_change_poll_delay": 5,
     "boil_api_base_url": "https://ippanel.boil.network",
     "boil_api_token": "",
     "ip_change_interval": 2,
@@ -108,7 +110,14 @@ def load_config() -> Dict[str, Any]:
         if key.endswith("_user_ids") and val is None:
             config[key] = ""
 
-    config["ip_change_provider"] = str(config.get("ip_change_provider") or "classic").strip().lower()
+    valid_providers = ("generic", "fachost", "boil", "classic")
+    raw_provider = str(config.get("ip_change_provider") or "generic").strip().lower()
+    if raw_provider == "classic":
+        config["ip_change_provider"] = "fachost"
+    elif raw_provider in valid_providers:
+        config["ip_change_provider"] = raw_provider
+    else:
+        config["ip_change_provider"] = "generic"
 
     required_fields = ["telegram_bot_token", "telegram_chat_id"]
     for field in required_fields:

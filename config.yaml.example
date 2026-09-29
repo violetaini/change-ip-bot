@@ -15,16 +15,20 @@ ip_check_cmd: "curl -s api-ipv4.ip.sb/ip"
 ip_check_api: ""
 ip_check_timeout: 60
 
-# IP更换模式配置: classic (经典自定义API) 或 boil (Boil Network 住宅IP)
-ip_change_provider: "classic"
+# IP更换模式配置:
+#   - generic: 通用模式 (推荐。请求 API 触发后，通过 curl -4 ip.sb 轮询自动获取新 IP)
+#   - fachost: Fachost 专用模式 (解析响应 JSON 中 status: "IP changed" 及 new_ip)
+#   - boil: Boil Network 模式 (官方住宅云端 API，自带配额与冷却)
+#   - classic: 兼容别名 (等同于 fachost)
+ip_change_provider: "generic"
 
-# 经典模式配置
+# 通用 / Fachost 模式配置
 ip_change_api: ""
 ip_change_interval: 2
 ip_change_timeout: 600
-ip_change_verify_public_ip: true
-ip_change_verify_delay: 5
-ip_change_retry_verify_count: 3
+ip_change_poll_retries: 18 # generic 模式轮询探测次数（默认 18 次）
+ip_change_poll_delay: 5    # generic 模式轮询间隔秒数（默认 5 秒，共 90 秒）
+ip_change_verify_public_ip: true # fachost 模式校验公网出口
 
 # Boil Network 配置
 boil_api_base_url: "https://ippanel.boil.network"
