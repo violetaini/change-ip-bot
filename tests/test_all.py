@@ -348,6 +348,69 @@ class TestQualityDegradation(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"WenQuanYi Zen Hei Mono", patched)
         self.assertIn(b"DejaVu Sans Mono", patched)
 
+    def test_extract_svg_urls_dual_stack(self):
+        from handlers.ip_quality import extract_svg_url, extract_svg_urls
+        sample_output = (
+            "Testing IPv4...\n"
+            "Report: https://Report.Check.Place/ip/ABC123V4.svg\n"
+            "Testing IPv6...\n"
+            "Report: https://Report.Check.Place/ip/XYZ789V6.svg\n"
+        )
+        urls = extract_svg_urls(sample_output)
+        self.assertEqual(len(urls), 2)
+        self.assertEqual(urls[0], "https://Report.Check.Place/ip/ABC123V4.svg")
+        self.assertEqual(urls[1], "https://Report.Check.Place/ip/XYZ789V6.svg")
+        self.assertEqual(extract_svg_url(sample_output), "https://Report.Check.Place/ip/ABC123V4.svg")
+
+    @patch("handlers.ip_quality.check_user_permission")
+    @patch("handlers.ip_quality.run_quality_command")
+    @patch("handlers.ip_quality.render_svg_url_to_png")
+    @patch("handlers.ip_quality.crop_report_area")
+    async def test_ip_quality_dual_stack_send_media_group(self, mock_crop, mock_render, mock_cmd, mock_perm):
+        mock_perm.return_value = True
+        mock_cmd.return_value = (
+            0,
+            "IPv4: https://Report.Check.Place/ip/V4.svg\nIPv6: https://Report.Check.Place/ip/V6.svg"
+        )
+        def create_dummy_jpg(png_p, jpg_p):
+            with open(jpg_p, "wb") as f:
+                f.write(b"dummy_jpg_bytes")
+        mock_crop.side_effect = create_dummy_jpg
+
+        from handlers.ip_quality import ip_quality_handler
+
+        update = MagicMock()
+        update.effective_user.id = 123456
+        update.effective_user.username = "test"
+        update.effective_user.full_name = "Test User"
+        update.message.reply_text = MagicMock()
+        fut_text = asyncio.Future()
+        fut_text.set_result(None)
+        update.message.reply_text.return_value = fut_text
+
+        update.message.reply_media_group = MagicMock()
+        fut_mg = asyncio.Future()
+        fut_mg.set_result(None)
+        update.message.reply_media_group.return_value = fut_mg
+
+        context = MagicMock()
+        context.args = []
+
+        await ip_quality_handler(update, context)
+
+        update.message.reply_media_group.assert_called_once()
+        called_media = update.message.reply_media_group.call_args[1]["media"]
+        self.assertEqual(len(called_media), 2)
+        from telegram import InputMediaPhoto
+        if hasattr(InputMediaPhoto, "call_args_list") and InputMediaPhoto.call_args_list:
+            c0 = InputMediaPhoto.call_args_list[-2][1].get("caption", "")
+            c1 = InputMediaPhoto.call_args_list[-1][1].get("caption", "")
+            self.assertIn("IPv4", c0)
+            self.assertIn("IPv6", c1)
+        else:
+            self.assertIn("IPv4", str(called_media[0].caption))
+            self.assertIn("IPv6", str(called_media[1].caption))
+
 
 class TestRemoteSSH(unittest.TestCase):
     def setUp(self):

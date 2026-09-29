@@ -37,6 +37,7 @@ from handlers.ip_check import check_ip_status
 from handlers.ip_quality import (
     crop_report_area,
     extract_svg_url,
+    extract_svg_urls,
     ip_quality_handler,
     render_svg_url_to_png,
     run_quality_command,
@@ -359,8 +360,8 @@ class VPSChangeIPBot:
             return_code, output = await asyncio.to_thread(run_quality_command, quality_cmd)
             logger.info(f"自动IP质量检测命令返回码: {return_code}")
 
-            svg_url = extract_svg_url(output)
-            if not svg_url:
+            svg_urls = extract_svg_urls(output)
+            if not svg_urls:
                 text = (
                     "自动IP质量检测完成，但没有识别到SVG链接。\n"
                     f"命令返回码: {return_code}\n\n"
@@ -371,25 +372,64 @@ class VPSChangeIPBot:
                 return
 
             tmp_dir = tempfile.mkdtemp(prefix="auto_ip_quality_")
-            png_path = str(Path(tmp_dir) / "ip_quality_report.png")
-            jpg_path = str(Path(tmp_dir) / "ip_quality_report.jpg")
-            try:
-                await asyncio.to_thread(render_svg_url_to_png, svg_url, png_path)
-                await asyncio.to_thread(crop_report_area, png_path, jpg_path)
+            successful_items = []
+            failed_items = []
+            total_reports = len(svg_urls)
 
-                for chat_id in chat_ids:
-                    with open(jpg_path, "rb") as f:
+            for idx, svg_url in enumerate(svg_urls):
+                label = "IPv4" if idx == 0 else "IPv6" if idx == 1 else f"节点 {idx + 1}"
+                png_path = str(Path(tmp_dir) / f"auto_report_{idx}.png")
+                jpg_path = str(Path(tmp_dir) / f"auto_report_{idx}.jpg")
+                try:
+                    await asyncio.to_thread(render_svg_url_to_png, svg_url, png_path)
+                    await asyncio.to_thread(crop_report_area, png_path, jpg_path)
+                    successful_items.append({"label": label, "jpg_path": jpg_path, "url": svg_url})
+                except Exception as render_err:
+                    logger.warning(f"自动IP质量图片渲染失败 ({label}): {render_err}")
+                    failed_items.append({"label": label, "error": str(render_err), "url": svg_url})
+
+            from telegram import InputMediaPhoto
+            for chat_id in chat_ids:
+                if len(successful_items) == 1:
+                    item = successful_items[0]
+                    with open(item["jpg_path"], "rb") as f:
                         await context.bot.send_photo(
                             chat_id=chat_id,
                             photo=f,
-                            caption="自动换IP后的IP质量检测报告",
+                            caption=f"自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
                         )
-            except Exception as render_err:
-                logger.warning(f"自动IP质量图片渲染失败，降级发送链接: {render_err}")
-                for chat_id in chat_ids:
+                elif len(successful_items) > 1:
+                    files_to_close = []
+                    try:
+                        media = []
+                        for item in successful_items:
+                            f = open(item["jpg_path"], "rb")
+                            files_to_close.append(f)
+                            media.append(InputMediaPhoto(
+                                media=f,
+                                caption=f"自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
+                            ))
+                        await context.bot.send_media_group(chat_id=chat_id, media=media)
+                    except Exception as mg_err:
+                        logger.warning(f"自动换IP报告媒体组发送失败，降级为单张发送: {mg_err}")
+                        for item in successful_items:
+                            with open(item["jpg_path"], "rb") as f:
+                                await context.bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=f,
+                                    caption=f"自动换IP后的【{item['label']}】IP质量检测报告\n🔗 报告链接: {item['url']}",
+                                )
+                    finally:
+                        for f in files_to_close:
+                            try:
+                                f.close()
+                            except Exception:
+                                pass
+
+                for item in failed_items:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"自动换IP成功，IP质量检测完成。\n⚠️ 图片渲染失败，可直接点击查看报告：\n{svg_url}",
+                        text=f"自动换IP成功，【{item['label']}】图片渲染失败，可直接点击查看报告：\n🔗 {item['url']}",
                     )
         except Exception as e:
             logger.exception(f"自动IP质量检测失败: {e}")

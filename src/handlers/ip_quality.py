@@ -45,9 +45,20 @@ def run_quality_command(cmd: str) -> tuple[int, str]:
     return process.returncode, output.strip()
 
 
+def extract_svg_urls(text: str) -> list[str]:
+    matches = SVG_URL_RE.findall(text or "")
+    seen = set()
+    result = []
+    for u in matches:
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
 def extract_svg_url(text: str) -> str:
-    match = SVG_URL_RE.search(text)
-    return match.group(0) if match else ""
+    urls = extract_svg_urls(text)
+    return urls[0] if urls else ""
 
 
 def find_browser_binary() -> str:
@@ -186,22 +197,39 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     full_name = update.effective_user.full_name
     logger.info(f"收到 quality 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
 
+    explicit_flag = ""
+    if context.args:
+        for arg in context.args:
+            clean_arg = str(arg).strip().lower()
+            if clean_arg in ("-4", "4", "ipv4", "v4"):
+                explicit_flag = "-4"
+                break
+            elif clean_arg in ("-6", "6", "ipv6", "v6"):
+                explicit_flag = "-6"
+                break
+
+    base_cmd = str(config.get("ip_quality_cmd") or DEFAULT_QUALITY_CMD).strip()
+    quality_cmd = base_cmd
+    if explicit_flag and explicit_flag not in quality_cmd:
+        quality_cmd = f"{quality_cmd} {explicit_flag}"
+
+    target_desc = "双栈 (IPv4 & IPv6)" if not explicit_flag else ("IPv6" if explicit_flag == "-6" else "IPv4")
+
     from utils.remote_ssh import is_remote_ssh_enabled, get_ssh_config
     if is_remote_ssh_enabled():
         cfg = get_ssh_config()
-        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 检测 IP 质量，完成后将直接发送报告预览...")
+        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 检测 IP 质量 [{target_desc}]，双栈耗时可能需 1~3 分钟，完成后将发送报告预览...")
     else:
-        await update.message.reply_text("正在检测 IP 质量，完成后将直接发送裁切后的图片预览...")
+        await update.message.reply_text(f"正在检测 IP 质量 [{target_desc}]，完成后将发送图片预览...")
 
     loop = asyncio.get_running_loop()
     tmp_dir = None
     try:
-        quality_cmd = str(config.get("ip_quality_cmd") or DEFAULT_QUALITY_CMD).strip()
         return_code, output = await loop.run_in_executor(None, run_quality_command, quality_cmd)
         logger.info(f"IP 质量检测命令返回码: {return_code}")
 
-        svg_url = extract_svg_url(output)
-        if not svg_url:
+        svg_urls = extract_svg_urls(output)
+        if not svg_urls:
             preview = output[-3000:] if output else "无输出"
             await update.message.reply_text(
                 text="IP 质量检测完成，但没有识别到 SVG 链接。\n"
@@ -211,30 +239,75 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         tmp_dir = tempfile.mkdtemp(prefix="ip_quality_")
-        png_path = str(Path(tmp_dir) / "ip_quality_report.png")
-        jpg_path = str(Path(tmp_dir) / "ip_quality_report.jpg")
+        successful_items = []
+        failed_items = []
 
-        try:
-            await loop.run_in_executor(None, render_svg_url_to_png, svg_url, png_path)
-            await loop.run_in_executor(None, crop_report_area, png_path, jpg_path)
+        total_reports = len(svg_urls)
+        for idx, svg_url in enumerate(svg_urls):
+            png_path = str(Path(tmp_dir) / f"report_{idx}.png")
+            jpg_path = str(Path(tmp_dir) / f"report_{idx}.jpg")
+            if explicit_flag == "-4":
+                label = "IPv4"
+            elif explicit_flag == "-6":
+                label = "IPv6"
+            elif total_reports >= 2:
+                label = "IPv4" if idx == 0 else "IPv6" if idx == 1 else f"节点 {idx + 1}"
+            else:
+                label = "IPv4 / 单栈"
 
-            with open(jpg_path, "rb") as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption="IP 质量检测完成，图片预览已附上。",
-                )
-        except Exception as render_err:
-            logger.warning(f"IP质量图片渲染失败，降级发送原始链接: {render_err}")
+            try:
+                await loop.run_in_executor(None, render_svg_url_to_png, svg_url, png_path)
+                await loop.run_in_executor(None, crop_report_area, png_path, jpg_path)
+                successful_items.append({"label": label, "jpg_path": jpg_path, "url": svg_url})
+            except Exception as render_err:
+                logger.warning(f"【{label}】IP质量图片渲染失败: {render_err}")
+                failed_items.append({"label": label, "error": str(render_err), "url": svg_url})
+
+        if failed_items and not successful_items:
             try:
                 from utils.system_deps import ensure_system_dependencies
                 loop.run_in_executor(None, ensure_system_dependencies)
             except Exception:
                 pass
 
+        if len(successful_items) == 1:
+            item = successful_items[0]
+            with open(item["jpg_path"], "rb") as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption=f"【{item['label']}】IP 质量检测完成，图片预览已附上。\n🔗 原始报告: {item['url']}",
+                )
+        elif len(successful_items) > 1:
+            from telegram import InputMediaPhoto
+            media = []
+            files_to_close = []
+            try:
+                for item in successful_items:
+                    f = open(item["jpg_path"], "rb")
+                    files_to_close.append(f)
+                    media.append(InputMediaPhoto(
+                        media=f,
+                        caption=f"【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
+                    ))
+                await update.message.reply_media_group(media=media)
+            except Exception as mg_err:
+                logger.warning(f"发送媒体组失败，降级为逐张发送: {mg_err}")
+                for item in successful_items:
+                    with open(item["jpg_path"], "rb") as f:
+                        await update.message.reply_photo(
+                            photo=f,
+                            caption=f"【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
+                        )
+            finally:
+                for f in files_to_close:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+
+        for item in failed_items:
             await update.message.reply_text(
-                "IP 质量检测完成。\n"
-                f"⚠️ 图片渲染失败（{redact_text(str(render_err))}），已自动降级为报告链接。\n"
-                f"🔗 点击查看详细报告：\n{svg_url}"
+                f"【{item['label']}】图片渲染失败（{redact_text(item['error'])}），已自动降级为报告链接：\n🔗 {item['url']}"
             )
     except subprocess.TimeoutExpired:
         await update.message.reply_text("IP 质量检测超时，请稍后再试。")
