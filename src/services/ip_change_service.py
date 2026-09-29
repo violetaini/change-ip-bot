@@ -1,6 +1,8 @@
 import asyncio
 import datetime as dt
+import ipaddress
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
 
@@ -195,6 +197,23 @@ def get_ip_change_provider_name() -> str:
     return p
 
 
+def is_private_or_local_target(url: str) -> bool:
+    """判断目标 URL 是否为内网/局域网私有地址 (如 192.168.x.x, 10.x.x.x, 127.0.0.1, .local 等)"""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or url.split("/")[0].split(":")[0]
+        clean_host = host.strip().lower()
+        if clean_host in ("localhost", "127.0.0.1", "::1") or clean_host.endswith(".local") or clean_host.endswith(".lan"):
+            return True
+        try:
+            ip_obj = ipaddress.ip_address(clean_host)
+            return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+        except ValueError:
+            return False
+    except Exception:
+        return False
+
+
 async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
     interval_error = _check_interval()
     if interval_error:
@@ -218,16 +237,36 @@ async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
     old_ip = await asyncio.to_thread(get_active_public_ipv4)
     logger.info(f"[Generic通用模式] 换IP前当前出口IP: {old_ip or '未知'}")
 
-    # 2. 触发通用换 IP API (发出 GET 请求，不强制要求特定的返回JSON格式)
+    # 2. 触发通用换 IP API
+    # 智能分流：
+    # - 内网/局域网地址 (如 192.168.1.1/127.0.0.1)：必须在内网环境访问，若开启了 SSH 则通过 SSH 穿透到家宽内部调用 curl 触发
+    # - 公网地址：直接由当前运行 Bot 的外部服务器发送 HTTP GET 请求
     timeout = int(config.get("ip_change_timeout", 60))
-    try:
-        def _trigger():
-            resp = requests.get(api_url, timeout=timeout)
-            return resp.status_code, resp.text[:200]
-        code, text = await asyncio.to_thread(_trigger)
-        logger.info(f"[Generic通用模式] 换IP API触发成功，响应 HTTP {code}: {redact_text(text)}")
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"[Generic通用模式] 换IP API 请求断开或超时（通常因路由器/接口立即重启导致）: {e}")
+    is_private_api = is_private_or_local_target(api_url)
+
+    if is_remote_ssh_enabled() and is_private_api:
+        logger.info(f"[Generic通用模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 隧道在家宽内部执行 curl 触发...")
+        try:
+            cmd = f"curl -s -m 10 '{api_url}'"
+            code, out = await asyncio.to_thread(
+                run_remote_ssh_command,
+                cmd,
+                timeout=15,
+                allow_retry_on_ip_change=False,
+            )
+            logger.info(f"[Generic通用模式] 远程 SSH 触发完成，返回码: {code}")
+        except Exception as e:
+            logger.warning(f"[Generic通用模式] 远程 SSH 触发请求中断（通常因路由器/接口立即重启导致）: {e}")
+    else:
+        logger.info(f"[Generic通用模式] 换IP API为公网地址 ({api_url})，由外部服务器直接请求触发...")
+        try:
+            def _trigger():
+                resp = requests.get(api_url, timeout=timeout)
+                return resp.status_code, resp.text[:200]
+            code, text = await asyncio.to_thread(_trigger)
+            logger.info(f"[Generic通用模式] 换IP API触发成功，响应 HTTP {code}: {redact_text(text)}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"[Generic通用模式] 换IP API 请求断开或超时（通常因路由器/接口立即重启导致）: {e}")
 
     # 3. 轮询探测新公网 IP (使用 curl -4 ip.sb 轮询)
     poll_retries = int(config.get("ip_change_poll_retries", 18))
@@ -236,6 +275,15 @@ async def _perform_generic_ip_change(trigger: str = "manual") -> ChangeResult:
 
     for attempt in range(1, poll_retries + 1):
         await asyncio.sleep(poll_delay)
+
+        # 若启用远程 SSH，每次轮询时强制刷新 1.1.1.1 DoH 解析，以实时跟踪家宽域名的最新动态 IP
+        if is_remote_ssh_enabled():
+            raw_host = str(config.get("remote_ssh_host") or "").strip()
+            if raw_host:
+                from utils.remote_ssh import resolve_target_host
+                refreshed_host_ip = await asyncio.to_thread(resolve_target_host, raw_host, True)
+                logger.debug(f"[Generic通用模式] 轮询第 {attempt} 次，实时刷新目标主机 DoH 解析: {raw_host} -> {refreshed_host_ip}")
+
         curr = await asyncio.to_thread(get_active_public_ipv4)
         logger.info(f"[Generic通用模式] 轮询探测新IP 第 {attempt}/{poll_retries} 次: {curr}")
         if curr and is_valid_ipv4(curr):

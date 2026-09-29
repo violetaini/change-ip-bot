@@ -269,6 +269,37 @@ class TestIPChangeService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.new_ip, "2.2.2.2")
         self.assertEqual(result.old_ip, "1.1.1.1")
 
+    @patch("services.ip_change_service.run_remote_ssh_command")
+    @patch("services.ip_change_service.get_active_public_ipv4")
+    @patch("services.ip_change_service._update_dns_safely")
+    async def test_generic_mode_lan_api_via_ssh(self, mock_dns, mock_get_ip, mock_ssh):
+        from config import config
+        from services.ip_change_service import is_private_or_local_target
+
+        self.assertTrue(is_private_or_local_target("http://192.168.1.1/reconnect"))
+        self.assertTrue(is_private_or_local_target("http://127.0.0.1:8080/reconnect"))
+        self.assertTrue(is_private_or_local_target("http://router.local/api"))
+        self.assertFalse(is_private_or_local_target("https://api.ipify.org"))
+        self.assertFalse(is_private_or_local_target("https://panel.fachost.com/api"))
+
+        config["ip_change_provider"] = "generic"
+        config["remote_ssh_enabled"] = True
+        config["ip_change_api"] = "http://192.168.1.1/cgi-bin/reconnect"
+        config["ip_change_interval"] = 0
+        config["ip_change_poll_retries"] = 2
+        config["ip_change_poll_delay"] = 0
+
+        mock_get_ip.side_effect = ["1.1.1.1", "2.2.2.2"]
+        mock_ssh.return_value = (0, "OK")
+        mock_dns.return_value = "DNS OK"
+
+        result = await perform_ip_change(trigger="test")
+        self.assertTrue(result.success)
+        self.assertEqual(result.new_ip, "2.2.2.2")
+        # Verify SSH was called for the LAN API trigger
+        ssh_calls = [c[0][0] for c in mock_ssh.call_args_list]
+        self.assertTrue(any("192.168.1.1" in c for c in ssh_calls))
+
 
 class TestBotHelpers(unittest.TestCase):
     def test_admin_id_parsing(self):
