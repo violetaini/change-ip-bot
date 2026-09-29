@@ -20,6 +20,11 @@ SVG_URL_RE = re.compile(r'https?://[^\s"\'<>]+\.svg(?:\?[^\s"\'<>]*)?', re.IGNOR
 
 
 def run_quality_command(cmd: str) -> tuple[int, str]:
+    from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
+    if is_remote_ssh_enabled():
+        logger.info("通过远程家宽 SSH 执行 IP 质量检测脚本")
+        return run_remote_ssh_command(cmd, timeout=900)
+
     run_kwargs = {
         "shell": True,
         "capture_output": True,
@@ -181,7 +186,12 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     full_name = update.effective_user.full_name
     logger.info(f"收到 quality 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
 
-    await update.message.reply_text("正在检测 IP 质量，完成后将直接发送裁切后的图片预览...")
+    from utils.remote_ssh import is_remote_ssh_enabled, get_ssh_config
+    if is_remote_ssh_enabled():
+        cfg = get_ssh_config()
+        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 检测 IP 质量，完成后将直接发送报告预览...")
+    else:
+        await update.message.reply_text("正在检测 IP 质量，完成后将直接发送裁切后的图片预览...")
 
     loop = asyncio.get_running_loop()
     tmp_dir = None

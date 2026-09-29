@@ -60,6 +60,13 @@ DEFAULT_CONFIG = {
     "stream_check_cmd": "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)",
     "stream_check_input": "1",
     "stream_check_timeout": 1200,
+    "remote_ssh_enabled": False,
+    "remote_ssh_host": "",
+    "remote_ssh_port": 22,
+    "remote_ssh_user": "root",
+    "remote_ssh_key_path": "",
+    "remote_ssh_password": "",
+    "remote_ssh_timeout": 300,
 }
 
 

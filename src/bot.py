@@ -160,8 +160,22 @@ def resolve_ipv4_records(hostname: str) -> list[str]:
     clean_name = str(hostname or "").strip().rstrip(".")
     if not clean_name:
         return []
-    records = socket.getaddrinfo(clean_name, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
-    return sorted({item[4][0] for item in records if item and item[4]})
+
+    # 1. 优先使用 Cloudflare 1.1.1.1 DoH 解析，绕过本地 SmartDNS / AdGuard 缓存
+    try:
+        from utils.remote_ssh import resolve_via_cloudflare_doh
+        doh_ip = resolve_via_cloudflare_doh(clean_name, timeout=5)
+        if doh_ip:
+            return [doh_ip]
+    except Exception:
+        pass
+
+    # 2. 本地系统解析兜底
+    try:
+        records = socket.getaddrinfo(clean_name, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        return sorted({item[4][0] for item in records if item and item[4]})
+    except Exception:
+        return []
 
 
 def get_log_path() -> Path:
@@ -1174,6 +1188,20 @@ class VPSChangeIPBot:
 
         speedtest_cli = "可用" if shutil.which("speedtest") else "不可用"
         checks.append(f"speedtest CLI: {speedtest_cli}")
+
+        from utils.remote_ssh import is_remote_ssh_enabled, test_remote_ssh_connectivity, get_ssh_config
+        if is_remote_ssh_enabled():
+            cfg = get_ssh_config()
+            try:
+                ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity)
+                if ok:
+                    checks.append(f"家宽SSH连通: ✅ 正常 (目标: {target_ip}:{cfg['port']}, 延迟: {rtt}ms)")
+                else:
+                    checks.append(f"家宽SSH连通: ⚠️ 无法连通 (目标: {target_ip}:{cfg['port']})")
+            except Exception as ex:
+                checks.append(f"家宽SSH连通: ⚠️ 检测异常 ({ex})")
+        else:
+            checks.append("家宽SSH连通: 未启用 (使用机房本地环境运行)")
 
         await update.message.reply_text("健康检查\n" + "\n".join(f"- {item}" for item in checks))
 

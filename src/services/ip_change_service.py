@@ -111,6 +111,16 @@ async def _verify_changed_ip(target_ip: str) -> bool:
 
 
 def _update_dns_safely(new_ip: str) -> str:
+    # 换IP成功并获得新IP后，立即更新本地内存DNS映射，防止SmartDNS/本地DNS缓存滞后
+    try:
+        from utils.remote_ssh import set_cached_host_ip
+        for host_key in ("dns_record_name", "huawei_dns_record_name", "remote_ssh_host"):
+            hostname = str(config.get(host_key) or "").strip().rstrip(".")
+            if hostname:
+                set_cached_host_ip(hostname, new_ip)
+    except Exception as ex:
+        logger.debug(f"更新本地DNS映射异常: {ex}")
+
     try:
         return update_dns_if_enabled(new_ip)
     except Exception as dns_error:

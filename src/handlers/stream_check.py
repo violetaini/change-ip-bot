@@ -49,6 +49,14 @@ def strip_ansi(text: str) -> str:
 
 
 def run_stream_command(cmd: str, auto_input: str, timeout: int) -> tuple[int, str, float]:
+    from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
+    if is_remote_ssh_enabled():
+        logger.info("通过远程家宽 SSH 执行流媒体解锁检测脚本")
+        started = time.monotonic()
+        code, out = run_remote_ssh_command(cmd, timeout=max(30, int(timeout)), input_data=f"{auto_input.rstrip()}\n")
+        elapsed = time.monotonic() - started
+        return code, strip_ansi(out).strip(), elapsed
+
     run_kwargs = {
         "shell": True,
         "capture_output": True,
@@ -192,7 +200,12 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         f"收到 stream 命令，用户ID: {update.effective_user.id}，"
         f"用户名: {update.effective_user.username}"
     )
-    await update.message.reply_text("正在执行流媒体解锁检测，脚本会自动选择 1，请稍等...")
+    from utils.remote_ssh import is_remote_ssh_enabled, get_ssh_config
+    if is_remote_ssh_enabled():
+        cfg = get_ssh_config()
+        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 执行流媒体解锁检测，脚本会自动选择 1，请稍等...")
+    else:
+        await update.message.reply_text("正在执行流媒体解锁检测，脚本会自动选择 1，请稍等...")
 
     try:
         stream_cmd = str(config.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()

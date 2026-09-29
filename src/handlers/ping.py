@@ -43,19 +43,25 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif count > 100:
         count = 100
         await update.message.reply_text("Ping 次数已限制为最大值 100")
-
-    await update.message.reply_text(f"正在 ping {target} ({count} 次)...")
-
     try:
-        ping_cmd = ['ping', '-n', str(count), target] if os.name == 'nt' else ['ping', '-c', str(count), target]
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ping_cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        output = result.stdout
+        from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config
+        if is_remote_ssh_enabled():
+            cfg = get_ssh_config()
+            await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) ping {target} ({count} 次)...")
+            ping_cmd_str = f"ping -c {count} {target}"
+            code, output = await asyncio.to_thread(run_remote_ssh_command, ping_cmd_str, timeout=300)
+        else:
+            await update.message.reply_text(f"正在 ping {target} ({count} 次)...")
+            ping_cmd = ['ping', '-n', str(count), target] if os.name == 'nt' else ['ping', '-c', str(count), target]
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ping_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            output = result.stdout
+
         stats_match = re.search(r'(\d+) packets transmitted, (\d+) received, (\d+)% packet loss', output)
         rtt_match = re.search(r'min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', output)
 
@@ -75,7 +81,7 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• 抖动: {mdev} ms"
             )
         else:
-            message = output or result.stderr or "Ping 未返回可解析结果"
+            message = output or "Ping 未返回可解析结果"
 
         await update.message.reply_text(message)
     except subprocess.TimeoutExpired:

@@ -18,6 +18,32 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_name = update.effective_user.full_name
     logger.info(f"收到 speedtest 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
 
+    from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config
+    if is_remote_ssh_enabled():
+        cfg = get_ssh_config()
+        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 获取测速节点列表...")
+        cmd_str = "speedtest -L --accept-license --accept-gdpr --format=json"
+        try:
+            code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=30)
+            if "Limit reached" in output:
+                await update.message.reply_text("测速超过次数限制，请稍后再试")
+                return
+            servers = json.loads(output)['servers']
+            keyboard = []
+            for server in servers[:20]:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"{server['name']} - {server['location']} - {server['country']}",
+                        callback_data=f"speedtest_{server['id']}",
+                    )
+                ])
+            keyboard.insert(0, [InlineKeyboardButton("自动选择最佳节点", callback_data="speedtest_auto")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("请选择测速节点:", reply_markup=reply_markup)
+        except Exception as e:
+            await update.message.reply_text(f"获取测速节点失败: {str(e)}")
+        return
+
     await update.message.reply_text("正在获取测速节点列表...")
     try:
         result = await asyncio.to_thread(
@@ -62,21 +88,32 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if server_id != 'auto':
         cmd.extend(['-s', server_id])
 
-    await query.edit_message_text("正在进行测速...\n这可能需要几分钟时间...")
-
+    from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config
     try:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            await query.edit_message_text(f"测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
-            return
+        if is_remote_ssh_enabled():
+            cfg = get_ssh_config()
+            await query.edit_message_text(f"正在通过远程家宽 SSH ({cfg['host']}) 进行测速...\n这可能需要 1~2 分钟...")
+            cmd_str = f"speedtest {'-s ' + server_id if server_id != 'auto' else ''} --accept-license --accept-gdpr --format=json"
+            code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=600)
+            try:
+                data = json.loads(output)
+            except json.JSONDecodeError:
+                await query.edit_message_text(f"测速结果解析失败。原始输出：\n{output[:3000]}")
+                return
+        else:
+            await query.edit_message_text("正在进行测速...\n这可能需要几分钟时间...")
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                await query.edit_message_text(f"测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
+                return
 
         message = (
             "测速结果:\n"

@@ -30,6 +30,7 @@ def redact_text(text: str) -> str:
             "porkbun_api_key",
             "porkbun_secret_api_key",
             "digitalocean_token",
+            "remote_ssh_password",
         ):
             value = str(config.get(key, "") or "").strip()
             if len(value) >= 6:

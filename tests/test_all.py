@@ -45,13 +45,18 @@ class TestConfigAndRedact(unittest.TestCase):
         self.assertIn("ip_change_provider", DEFAULT_CONFIG)
         self.assertIn("boil_api_base_url", DEFAULT_CONFIG)
         self.assertIn("boil_api_token", DEFAULT_CONFIG)
+        self.assertIn("remote_ssh_enabled", DEFAULT_CONFIG)
+        self.assertIn("remote_ssh_host", DEFAULT_CONFIG)
+        self.assertIn("remote_ssh_port", DEFAULT_CONFIG)
         self.assertEqual(DEFAULT_CONFIG["ip_change_provider"], "classic")
+        self.assertFalse(DEFAULT_CONFIG["remote_ssh_enabled"])
 
     def test_redact_sensitive_tokens(self):
-        text = "Request with Bearer my_secret_token_123456789 and telegram_bot_token=123456:abcdefghijklmnopqrstuvwxyz"
+        text = "Request with Bearer my_secret_token_123456789 and telegram_bot_token=123456:abcdefghijklmnopqrstuvwxyz and remote_ssh_password=super_secret_ssh_pass"
         redacted = redact_text(text)
         self.assertNotIn("my_secret_token_123456789", redacted)
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz", redacted)
+        self.assertNotIn("super_secret_ssh_pass", redacted)
         self.assertIn("<redacted>", redacted)
 
 
@@ -342,6 +347,103 @@ class TestQualityDegradation(unittest.IsolatedAsyncioTestCase):
         patched = patch_svg_cjk_font(raw_svg)
         self.assertIn(b"WenQuanYi Zen Hei Mono", patched)
         self.assertIn(b"DejaVu Sans Mono", patched)
+
+
+class TestRemoteSSH(unittest.TestCase):
+    def setUp(self):
+        from utils.remote_ssh import _DNS_LOCAL_CACHE
+        _DNS_LOCAL_CACHE.clear()
+
+    def tearDown(self):
+        from utils.remote_ssh import _DNS_LOCAL_CACHE
+        _DNS_LOCAL_CACHE.clear()
+
+    def test_dns_local_cache(self):
+        from utils.remote_ssh import get_cached_host_ip, set_cached_host_ip
+        self.assertEqual(get_cached_host_ip("residential.example.com"), "")
+        set_cached_host_ip("RESIDENTIAL.example.com.", "198.51.100.1")
+        self.assertEqual(get_cached_host_ip("residential.example.com"), "198.51.100.1")
+
+    @patch("requests.get")
+    def test_resolve_via_cloudflare_doh_success(self, mock_get):
+        from utils.remote_ssh import resolve_via_cloudflare_doh
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "Status": 0,
+            "Answer": [
+                {"name": "residential.example.com.", "type": 1, "TTL": 60, "data": "198.51.100.1"}
+            ]
+        }
+        mock_get.return_value = mock_resp
+
+        ip = resolve_via_cloudflare_doh("residential.example.com")
+        self.assertEqual(ip, "198.51.100.1")
+        mock_get.assert_called_once_with(
+            "https://1.1.1.1/dns-query?name=residential.example.com&type=A",
+            headers={"Accept": "application/dns-json"},
+            timeout=5,
+        )
+
+    @patch("requests.get")
+    def test_resolve_via_cloudflare_doh_failure(self, mock_get):
+        from utils.remote_ssh import resolve_via_cloudflare_doh
+        mock_get.side_effect = Exception("network timeout")
+        ip = resolve_via_cloudflare_doh("residential.example.com")
+        self.assertEqual(ip, "")
+
+    @patch("utils.remote_ssh.resolve_via_cloudflare_doh")
+    def test_resolve_target_host(self, mock_doh):
+        from utils.remote_ssh import get_cached_host_ip, resolve_target_host, set_cached_host_ip
+        # 1. Direct IP
+        self.assertEqual(resolve_target_host("1.2.3.4"), "1.2.3.4")
+
+        # 2. Local cache hit
+        set_cached_host_ip("mytest.com", "9.9.9.9")
+        self.assertEqual(resolve_target_host("mytest.com"), "9.9.9.9")
+        mock_doh.assert_not_called()
+
+        # 3. DoH resolution fallback
+        mock_doh.return_value = "8.8.8.8"
+        self.assertEqual(resolve_target_host("newhost.com"), "8.8.8.8")
+        self.assertEqual(get_cached_host_ip("newhost.com"), "8.8.8.8")
+
+    def test_build_ssh_command_prefix(self):
+        from utils.remote_ssh import build_ssh_command_prefix
+        cfg = {
+            "host": "1.2.3.4",
+            "port": 2222,
+            "user": "root",
+            "key_path": "",
+        }
+        cmd = build_ssh_command_prefix(cfg)
+        self.assertIn("ssh", cmd)
+        self.assertIn("-p", cmd)
+        self.assertIn("2222", cmd)
+        self.assertIn("StrictHostKeyChecking=no", cmd)
+        self.assertIn("UserKnownHostsFile=/dev/null", cmd)
+        self.assertIn("root@1.2.3.4", cmd)
+
+    @patch("subprocess.run")
+    def test_run_remote_ssh_command(self, mock_run):
+        from utils.remote_ssh import run_remote_ssh_command
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "output text"
+        mock_res.stderr = ""
+        mock_run.return_value = mock_res
+
+        code, out = run_remote_ssh_command("uname -a")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "output text")
+
+    @patch("utils.remote_ssh.run_remote_ssh_command")
+    def test_test_remote_ssh_connectivity(self, mock_ssh):
+        from utils.remote_ssh import test_remote_ssh_connectivity
+        mock_ssh.return_value = (0, "something __SSH_OK__ done")
+        ok, ip, rtt = test_remote_ssh_connectivity()
+        self.assertTrue(ok)
+        self.assertGreaterEqual(rtt, 0)
 
 
 if __name__ == "__main__":

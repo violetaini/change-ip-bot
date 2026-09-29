@@ -23,10 +23,12 @@ Supports both **Classic HTTP IP Change APIs** and **Boil Network residential IP 
 - **Scheduled Automatic Changes**:
   - Run automatic IP changes at fixed Beijing time (`/set_auto_time`, `/auto_start`, `/auto_stop`).
   - Configurable retries, delays, and notifications.
-- **Diagnostics & Network Tools**:
+- **Diagnostics & Network Tools (Local & Remote SSH)**:
   - IP quality reports with image generation (`/quality`).
   - Streaming service unlock checking (`/stream`).
   - Latency ping (`/ping`) and network speed test (`/speedtest`).
+  - **Remote SSH Node Execution**: Diagnostic scripts run directly on your target residential VPS/host via SSH, while rendering/reporting is done on the bot host.
+  - **1.1.1.1 DoH & Zero-Delay Local DNS Cache**: Directly queries Cloudflare 1.1.1.1 via DNS-over-HTTPS (bypassing SmartDNS/AdGuard caches) and immediately caches new IP mappings upon IP change.
 - **Security & Privacy**:
   - Strict role-based access control (Super Admin vs Admin).
   - Sensitive token / secret redaction across all logs and messages.
@@ -174,6 +176,15 @@ huawei_dns_record_name: ""
 stream_check_enabled: true
 stream_check_input: "1"
 stream_check_timeout: 1200
+
+# Remote SSH Node Execution (Optional: Run diagnostics on remote residential machine)
+remote_ssh_enabled: false
+remote_ssh_host: "hkt.example.com"
+remote_ssh_port: 22
+remote_ssh_user: "root"
+remote_ssh_key_path: "/opt/vps-change-ip/ssh_key.pem"
+remote_ssh_password: ""
+remote_ssh_timeout: 300
 ```
 
 `telegram_chat_id` can contain one or more chat IDs separated by commas.

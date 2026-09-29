@@ -27,11 +27,27 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if token:
             try:
                 boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
+                extra_lines = []
+                from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config
+                if is_remote_ssh_enabled():
+                    cfg = get_ssh_config()
+                    try:
+                        code, _ = await asyncio.to_thread(
+                            run_remote_ssh_command,
+                            "curl -s --connect-timeout 5 -o /dev/null -w '%{http_code}' https://www.itdog.cn",
+                            timeout=10,
+                        )
+                        status_str = "正常" if code == 0 else "丢包/超时"
+                        extra_lines.append(f"- 家宽至国内连通性(itdog): {status_str}")
+                    except Exception as ex:
+                        extra_lines.append(f"- 家宽至国内连通性(itdog): 探测超时")
+
+                extra_text = ("\n" + "\n".join(extra_lines)) if extra_lines else ""
                 await update.message.reply_text(
                     text=(
                         f"【Boil 模式当前住宅IP】\n"
                         f"- IP地址: {boil_ip}\n"
-                        f"- 状态: 正常（通过 Boil 官方 API 获取）\n"
+                        f"- 状态: 正常（通过 Boil 官方 API 获取）{extra_text}\n"
                         f"- 提示: 如需更换，可使用 /change 命令"
                     )
                 )
