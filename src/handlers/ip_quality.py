@@ -57,8 +57,19 @@ def render_svg_url_to_png(url: str, png_path: str) -> None:
     browser = find_browser_binary()
     if not browser:
         import cairosvg
+        import requests
 
-        cairosvg.svg2png(url=url, write_to=png_path, output_width=1600)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/svg+xml,*/*",
+        }
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            cairosvg.svg2png(bytestring=resp.content, write_to=png_path, output_width=1600)
+        except Exception:
+            cairosvg.svg2png(url=url, write_to=png_path, output_width=1600)
+
         if not os.path.exists(png_path):
             raise RuntimeError("CairoSVG 渲染失败，未生成 PNG 文件")
         return

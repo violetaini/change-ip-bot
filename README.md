@@ -86,7 +86,8 @@ cd /opt/vps-change-ip
 Create a virtual environment and install dependencies:
 
 ```bash
-apt install -y curl
+apt update
+apt install -y curl libcairo2 fonts-wqy-zenhei
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install -U pip

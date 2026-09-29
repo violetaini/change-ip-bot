@@ -4,9 +4,9 @@ VPS IP Bot 简洁部署说明
 1. 安装基础环境：
    apt update
    apt install -y python3 python3-pip python3-venv unzip \
-      curl fonts-noto-cjk fonts-wqy-zenhei fonts-wqy-microhei
+      curl libcairo2 fonts-wqy-zenhei
    如需优先用浏览器截图 /quality 报告，可额外安装 chromium；
-   未安装 chromium 时会使用 Python 依赖中的 CairoSVG 渲染。
+   未安装 chromium 时会使用 Python 依赖中的 CairoSVG (需 libcairo2) 渲染。
 
 二、上传并解压
 1. 把压缩包上传到服务器，例如 /root/vps-ip-bot-share.zip
