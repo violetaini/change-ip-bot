@@ -9,8 +9,10 @@ This document provides a comprehensive reference, parameter breakdown, and confi
 1. [Configuration Loading & Overrides](#1-configuration-loading--overrides)
 2. [Telegram Bot & Role-Based Access Control](#2-telegram-bot--role-based-access-control)
 3. [IP Change Providers](#3-ip-change-providers)
-   - [A. Boil Network Residential IP Mode](#a-boil-network-residential-ip-mode)
-   - [B. Classic Custom HTTP API Mode](#b-classic-custom-http-api-mode)
+   - [A. Generic API Mode](#a-generic-api-mode-generic-default--recommended)
+   - [B. Fachost Dedicated Mode](#b-fachost-dedicated-mode-fachost--classic)
+   - [C. Boil Network Residential IP Mode](#c-boil-network-residential-ip-mode-boil)
+   - [D. Provider Mode × Host / Third-Party Support Matrix](#d-provider-mode--host--third-party-support-matrix--recommendations)
 4. [Multi-Cloud DNS Auto-Sync](#4-multi-cloud-dns-auto-sync)
 5. [Scheduled Automated Changes & Propagation Verification](#5-scheduled-automated-changes--propagation-verification)
 6. [Remote Residential SSH Tunnel & Self-Healing](#6-remote-residential-ssh-tunnel--self-healing)
@@ -120,6 +122,19 @@ boil_api_token: "your_boil_api_token_here"
   2. `/change`: Triggers `POST /api/v1/changeIP`.
   3. **Client-Side Cooldown Guard (`COOLDOWN_PROTECTION`)**: The API-returned `next_allowed_at` timestamp is persisted locally. If an IP change is attempted during cooldown, the bot blocks the request locally, **preventing accidental quota deduction penalties**.
   4. Automatically parses `uses_left` (remaining daily quota) and includes it in status summaries.
+
+### D. Provider Mode × Host / Third-Party Support Matrix & Recommendations
+
+Behavioral and operational matrix across deployment topologies:
+
+| Provider Mode | Deployment Location | Change IP Trigger Mechanism | New IP Discovery Loop | Bot DDNS Auto-Sync | Dependencies & Deadlock Risk | Recommendation Rating |
+| :--- | :--- | :--- | :--- | :---: | :--- | :---: |
+| **Generic Mode<br>(`generic`)** | **Local Host**<br>*(Broadband/Router)* | Direct local API call (LAN Webhook, redial script) | Local `curl -4 ip.sb` polling loop | **✅ Supported**<br>(Bot auto-syncs) | **Zero Risk**: 100% standalone closed loop, zero external dependencies. | ⭐⭐⭐⭐⭐<br>**(Recommended for Router)** |
+| **Generic Mode<br>(`generic`)** | **Third-Party Server**<br>*(Cloud VPS)* | Public URL directly; LAN URL tunneled via SSH | Requires host domain resolved before SSH `curl` | **❌ Auto-Skipped**<br>(Managed by host DDNS) | **High Dependency**: Host must have separate DDNS (e.g. `ddns-go`); otherwise SSH deadlocks. | ⭐⭐<br>*(Deadlock prone)* |
+| **Fachost Mode<br>(`fachost`)** | **Local Host**<br>*(Fachost VPS)* | Direct call to Fachost control panel API | Direct parsing of `new_ip` from JSON response | **✅ Supported**<br>(Bot auto-syncs) | **Zero Risk**: Authoritative response with local verification. | ⭐⭐⭐⭐⭐<br>**(Recommended for Fachost)** |
+| **Fachost Mode<br>(`fachost`)** | **Third-Party Server**<br>*(Cloud VPS)* | Public URL directly; LAN URL tunneled via SSH | Direct parsing of `new_ip` from JSON response | **❌ Auto-Skipped**<br>(Managed by host DDNS) | **Low Risk**: New IP is known, but Bot skips DDNS to prevent overwriting host domain. | ⭐⭐⭐<br>*(Good for remote tests)* |
+| **Boil Residential<br>(`boil`)** | **Local Host**<br>*(Residential Node)* | Direct call to Boil official cloud REST API | Polling new IP from Boil cloud console API | **✅ Supported**<br>(Bot auto-syncs) | **Low Risk**: Temporary disconnection during PPPoE redial; resumes automatically. | ⭐⭐⭐⭐<br>*(Functional)* |
+| **Boil Residential<br>(`boil`)** | **Third-Party Server**<br>*(Cloud VPS)* | VPS directly calls Boil official cloud REST API | VPS directly polls new IP from Boil cloud API | **✅ Supported**<br>(Bot auto-syncs) | **Zero Risk**: VPS controller stays 24/7 online; updates DNS, tests tunnel via SSH. | ⭐⭐⭐⭐⭐<br>**(Recommended for Boil)** |
 
 ---
 

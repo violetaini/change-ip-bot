@@ -121,13 +121,21 @@ The bot supports three distinct operational engines tailored for different infra
   - *Architectural Benefit*: Run the bot 24/7 on an ultra-stable cloud VPS (avoiding Telegram downtime when residential PPPoE resets). When running network tests (`/quality`, `/stream`, `/speedtest`), the bot tunnels commands via SSH into the residential node to measure real residential metrics.
 - **SSH Setting**: Enabled (`remote_ssh_enabled: true`) on remote VPS; can also be disabled (`false`) if installed directly on the residential node.
 
-### Deployment Topology Comparison
+### Deployment Architecture Matrix (Host Machine vs. Third-Party Server)
 
-| Deployment Target | Machine / Mode | SSH State (`remote_ssh_enabled`) | DDNS Managed By | Architectural Highlights |
-| :--- | :--- | :---: | :---: | :--- |
-| **Installed Locally on Target Node** | **Soft Router** / Host (`generic` / `fachost`) | **Disabled** (`false`) | **Bot Auto-Sync** | Local rotation -> local detection -> instant DNS update. Standalone 100% closed loop. |
-| **Installed on Independent VPS** | **Remote Node** (`generic` / `fachost`) | **Enabled** (`true`) | **Remote Host DDNS (Bot Skips)** | Control/tests via SSH; Bot automatically skips DDNS to prevent overwrites & deadlocks. |
-| **Installed on Independent VPS** | **Boil Network** Residential Host (`boil`) | **Enabled** (`true`) | **Bot Auto-Sync** | Rotation/querying via cloud API, Bot auto-syncs DNS, diagnostics tunnel via SSH. |
+| Provider Mode | Deployment Location | Change IP Trigger Mechanism | New IP Discovery Loop | Bot DDNS Auto-Sync | Dependencies & Deadlock Risk | Recommendation Rating |
+| :--- | :--- | :--- | :--- | :---: | :--- | :---: |
+| **Generic Mode<br>(`generic`)** | **Local Host**<br>*(Broadband/Router)* | Direct local API call (LAN Webhook, redial script) | Local `curl -4 ip.sb` polling loop | **✅ Supported**<br>(Bot auto-syncs) | **Zero Risk**: 100% standalone closed loop, zero external dependencies. | ⭐⭐⭐⭐⭐<br>**(Recommended for Router)** |
+| **Generic Mode<br>(`generic`)** | **Third-Party Server**<br>*(Cloud VPS)* | Public URL directly; LAN URL tunneled via SSH | Requires host domain resolved before SSH `curl` | **❌ Auto-Skipped**<br>(Managed by host DDNS) | **High Dependency**: Host must have separate DDNS (e.g. `ddns-go`); otherwise SSH deadlocks. | ⭐⭐<br>*(Deadlock prone)* |
+| **Fachost Mode<br>(`fachost`)** | **Local Host**<br>*(Fachost VPS)* | Direct call to Fachost control panel API | Direct parsing of `new_ip` from JSON response | **✅ Supported**<br>(Bot auto-syncs) | **Zero Risk**: Authoritative response with local verification. | ⭐⭐⭐⭐⭐<br>**(Recommended for Fachost)** |
+| **Fachost Mode<br>(`fachost`)** | **Third-Party Server**<br>*(Cloud VPS)* | Public URL directly; LAN URL tunneled via SSH | Direct parsing of `new_ip` from JSON response | **❌ Auto-Skipped**<br>(Managed by host DDNS) | **Low Risk**: New IP is known, but Bot skips DDNS to prevent overwriting host domain. | ⭐⭐⭐<br>*(Good for remote tests)* |
+| **Boil Residential<br>(`boil`)** | **Local Host**<br>*(Residential Node)* | Direct call to Boil official cloud REST API | Polling new IP from Boil cloud console API | **✅ Supported**<br>(Bot auto-syncs) | **Low Risk**: Temporary disconnection during PPPoE redial; resumes automatically. | ⭐⭐⭐⭐<br>*(Functional)* |
+| **Boil Residential<br>(`boil`)** | **Third-Party Server**<br>*(Cloud VPS)* | VPS directly calls Boil official cloud REST API | VPS directly polls new IP from Boil cloud API | **✅ Supported**<br>(Bot auto-syncs) | **Zero Risk**: VPS controller stays 24/7 online; updates DNS, tests tunnel via SSH. | ⭐⭐⭐⭐⭐<br>**(Recommended for Boil)** |
+
+> 💡 **Architectural Selection Guidelines**:
+> 1. **Residential Soft Routers / LAN Redial**: Choose **`generic` (Generic Mode)** deployed locally on the host machine (`remote_ssh_enabled: false`) with Bot DDNS enabled. Simplest 100% standalone setup.
+> 2. **Fachost Dynamic VPS**: Choose **`fachost` Mode** deployed locally on the VPS (`remote_ssh_enabled: false`), parsing JSON responses and updating DDNS automatically.
+> 3. **Boil Residential Broadband**: Choose **`boil` Mode** deployed on an external lightweight overseas VPS (`remote_ssh_enabled: true`), enjoying 24/7 cloud uptime with SSH-tunneled network diagnostics.
 
 ---
 
