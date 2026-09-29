@@ -4,19 +4,19 @@
 
 # **VPS IP Bot**
 
-### 专为 VPS 与住宅家宽打造的自动化换 IP · 多服务商 DNS 动态同步 · 远程 SSH 双栈网络诊断机器人
+### 专为 VPS 与住宅家宽打造的自动化换 IP · 多服务商 DNS 动态同步 · 远程 SSH 双栈网络诊断机器人（原生深度支持 Boil Network 与 Fachost）
 
 [![Release](https://img.shields.io/github/v/release/violetaini/change-ip-bot?color=blue&style=flat-square)](https://github.com/violetaini/change-ip-bot/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-0088cc?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
-[![Tests](https://img.shields.io/badge/Tests-58%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
+[![Tests](https://img.shields.io/badge/Tests-64%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
 
 **[English](README.md)** · **[简体中文](README_CN.md)**
 
 </div>
 
-> 💡 **特别支持**：开箱深度优化并完美支持 **Fachost**（经典 HTTP 换 IP 接口 / 动态 VPS）与 **Boil Network**（云端控制台 API / 住宅宽带），支持多服务器/多节点分布式统一管理，支持单机单节点部署与“云端控制 + 边缘家宽”远程分离部署。
+> 💡 **特别支持 (About & Highlights)**：原生深度支持 **Boil Network**（官方云端 API / 住宅宽带 / 配额与冷却守护）与 **Fachost**（经典 HTTP 换 IP 接口 / 动态 VPS / 出口校验），支持多服务器/多节点分布式统一管理，支持单机单节点部署与“云端控制 + 边缘家宽”远程分离部署。
 
 ---
 
@@ -29,9 +29,9 @@
 
 ---
 
-## 📖 项目简介
+## 📖 项目简介 (About)
 
-**VPS IP Bot** 是一款面向 VPS 代理服务器与住宅家宽（PPPoE 动态拨号主机）的 Telegram 全功能自动化运维管理机器人。
+**VPS IP Bot** 是一款面向 VPS 代理服务器与住宅家宽（PPPoE 动态拨号主机）的 Telegram 全功能自动化运维管理机器人，**原生深度支持 Boil Network（住宅家宽 API 与配额冷却防护）与 Fachost（动态 VPS 换 IP 接口）**，并提供通用的自定义 Webhook 引擎。
 
 项目致力于解决动态 IP 服务器运维中的核心痛点：多节点统一管理、换 IP 过程的配额保护、DNS 动态记录的实时同步、本地 DNS 缓存对新 IP 的解析延迟，以及对双栈（IPv4 / IPv6）和真实境内（GFW）穿透连通性的精准诊断。
 

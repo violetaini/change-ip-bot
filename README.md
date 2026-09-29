@@ -4,19 +4,19 @@
 
 # **VPS IP Bot**
 
-### Automated IP Switching · Multi-Provider DNS Synchronization · Remote SSH Dual-Stack Diagnostics
+### Automated IP Switching · Multi-Provider DNS Synchronization · Remote SSH Dual-Stack Diagnostics (Native Support for Boil Network & Fachost)
 
 [![Release](https://img.shields.io/github/v/release/violetaini/change-ip-bot?color=blue&style=flat-square)](https://github.com/violetaini/change-ip-bot/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-0088cc?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
-[![Tests](https://img.shields.io/badge/Tests-58%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
+[![Tests](https://img.shields.io/badge/Tests-64%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
 
 **[English](README.md)** · **[简体中文](README_CN.md)**
 
 </div>
 
-> 💡 **Special Support**: Out-of-the-box optimized support for **Fachost** (Classic HTTP Change-IP API / Dynamic VPS) and **Boil Network** (Cloud Console API / Residential Broadband), supporting multi-server centralized management, standalone local deployments, and Cloud-to-Edge split architectures.
+> 💡 **Special Support (About & Highlights)**: Native, deeply-optimized support for **Boil Network** (Official Cloud API / Residential Broadband / Cooldown Protection) and **Fachost** (Classic HTTP Change-IP API / Dynamic VPS / Egress Verification), alongside a universal Webhook engine, multi-server centralized management, standalone local deployments, and Cloud-to-Edge split architectures.
 
 ---
 
@@ -29,9 +29,9 @@
 
 ---
 
-## 📖 Overview
+## 📖 About / Overview
 
-**VPS IP Bot** is an enterprise-grade Telegram automation bot engineered for VPS proxy servers and dynamic residential broadband (PPPoE redial nodes).
+**VPS IP Bot** is an enterprise-grade Telegram automation bot engineered for VPS proxy servers and dynamic residential broadband (PPPoE redial nodes), featuring **native out-of-the-box support for Boil Network (Residential Broadband API) and Fachost (Dynamic VPS IP Rotation)**, plus a universal webhook engine.
 
 It solves critical pain points in dynamic IP management: centralized multi-server administration, client-side quota & cooldown protection, instant multi-cloud DNS synchronization, local DNS cache poisoning avoidance, and accurate dual-stack (IPv4 & IPv6) diagnostic probing through firewalls.
 
