@@ -152,7 +152,13 @@ def normalize_server_config(server_raw: Dict[str, Any], global_cfg: Dict[str, An
     else:
         merged["ip_change_provider"] = "generic"
 
+    merged.pop("servers", None)
     merged["remote_ssh_enabled"] = _to_bool(merged.get("remote_ssh_enabled"))
+    merged["remote_ssh_port"] = int(merged.get("remote_ssh_port") or 22)
+    merged["ip_change_interval"] = int(merged.get("ip_change_interval") or 2)
+    merged["ip_change_timeout"] = int(merged.get("ip_change_timeout") or 600)
+    merged["ip_change_poll_retries"] = int(merged.get("ip_change_poll_retries") or 18)
+    merged["ip_change_poll_delay"] = int(merged.get("ip_change_poll_delay") or 5)
     merged["ip_change_verify_public_ip"] = _to_bool(merged.get("ip_change_verify_public_ip"))
     merged["auto_change_enabled"] = _to_bool(merged.get("auto_change_enabled"))
     merged["auto_change_notify"] = _to_bool(merged.get("auto_change_notify"))

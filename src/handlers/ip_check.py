@@ -101,7 +101,8 @@ async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) ->
                 lines.append("- 状态: 正常（通过 Boil 官方 API 获取）")
                 return "\n".join(lines)
             except Exception as e:
-                return f"【{sname}】通过 Boil API 获取IP失败: {e}"
+                prefix = f"【{sname}】" if is_multi_server_mode() else ""
+                return f"{prefix}通过 Boil API 获取IP失败: {e}"
 
     # Generic & Fachost 模式
     try:
@@ -169,7 +170,8 @@ async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) ->
 
         return "\n".join(lines)
     except Exception as e:
-        return f"【{sname}】检查IP状态时出错: {e}"
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+        return f"{prefix}检查IP状态时出错: {e}"
 
 
 async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):

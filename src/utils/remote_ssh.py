@@ -140,12 +140,23 @@ def build_ssh_command_prefix(ssh_cfg: Dict[str, Any]) -> list[str]:
     ]
 
     key_path = ssh_cfg.get("key_path")
-    if key_path and os.path.exists(key_path):
+    has_key = bool(key_path and os.path.exists(key_path))
+    if has_key:
         cmd.extend(["-i", key_path])
+
+    password = str(ssh_cfg.get("password") or "").strip()
+    use_sshpass = False
+    if password and not has_key and shutil.which("sshpass"):
+        use_sshpass = True
+
+    if not use_sshpass:
+        cmd.extend(["-o", "BatchMode=yes"])
 
     user = ssh_cfg.get("user") or "root"
     host = ssh_cfg.get("host")
     cmd.append(f"{user}@{host}")
+    if use_sshpass:
+        return ["sshpass", "-p", password] + cmd
     return cmd
 
 
@@ -157,6 +168,8 @@ def run_remote_ssh_command(
     server_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, str]:
     ssh_cfg = get_ssh_config(force_refresh=False, server_config=server_config)
+    if not ssh_cfg.get("host"):
+        raise ValueError("远程 SSH 主机地址 (remote_ssh_host) 未配置或无法解析")
     prefix = build_ssh_command_prefix(ssh_cfg)
     full_cmd = prefix + [command_str]
 

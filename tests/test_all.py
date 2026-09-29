@@ -1133,6 +1133,110 @@ class TestServerSelection(unittest.IsolatedAsyncioTestCase):
         update.message.reply_text.assert_not_called()
 
 
+class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
+    def test_state_concurrency(self):
+        import concurrent.futures
+        from utils.state import update_server_state_keys, load_server_state
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            temp_state_file = f.name
+
+        try:
+            with patch.dict(os.environ, {"VPS_IP_BOT_STATE_FILE": temp_state_file}):
+                def worker(idx):
+                    sid = f"node_{idx % 3}"
+                    update_server_state_keys(sid, {"counter": idx, "worker": True})
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(worker, i) for i in range(30)]
+                    for fut in concurrent.futures.as_completed(futures):
+                        fut.result()
+
+                for i in range(3):
+                    data = load_server_state(f"node_{i}")
+                    self.assertTrue(data.get("worker"))
+        finally:
+            if os.path.exists(temp_state_file):
+                os.unlink(temp_state_file)
+
+    def test_remote_ssh_host_validation(self):
+        from utils.remote_ssh import run_remote_ssh_command, build_ssh_command_prefix
+
+        # Empty host raises ValueError
+        with self.assertRaises(ValueError):
+            run_remote_ssh_command("echo 1", server_config={"remote_ssh_host": ""})
+
+        # BatchMode in build_ssh_command_prefix
+        prefix = build_ssh_command_prefix({
+            "host": "192.168.1.1",
+            "port": 22,
+            "user": "root",
+            "key_path": "",
+            "password": "",
+        })
+        self.assertIn("BatchMode=yes", prefix)
+
+    def test_persist_config_value_preserves_nested_servers(self):
+        from bot import persist_config_value
+        import config
+
+        sample_yaml = (
+            "ip_change_provider: generic\n"
+            "servers:\n"
+            "  - id: hkt\n"
+            "    ip_change_provider: fachost\n"
+            "  - id: tokyo\n"
+            "    ip_change_provider: boil\n"
+        )
+        with tempfile.NamedTemporaryFile("w+", suffix=".yaml", delete=False, encoding="utf-8") as f:
+            f.write(sample_yaml)
+            tmp_cfg_path = f.name
+
+        try:
+            with patch.dict(config.config, {"_loaded_from": tmp_cfg_path}):
+                persist_config_value("ip_change_provider", "boil")
+                with open(tmp_cfg_path, "r", encoding="utf-8") as rf:
+                    content = rf.read()
+                # Top level must be updated
+                self.assertTrue(content.startswith('ip_change_provider: "boil"\n'))
+                # Indented server provider must NOT be changed to boil
+                self.assertIn("  - id: hkt\n    ip_change_provider: fachost", content)
+        finally:
+            if os.path.exists(tmp_cfg_path):
+                os.unlink(tmp_cfg_path)
+
+    async def test_ip_quality_callback_support(self):
+        from handlers.ip_quality import ip_quality_handler
+
+        update = MagicMock()
+        update.message = None
+        mock_msg = AsyncMock()
+        update.callback_query = MagicMock()
+        update.callback_query.message = mock_msg
+        context = MagicMock()
+        context.args = []
+
+        with patch("handlers.ip_quality.check_user_permission", return_value=True), \
+             patch("handlers.ip_quality.resolve_target_server", return_value=({"id": "default"}, False, False)), \
+             patch("handlers.ip_quality.run_quality_command", return_value=(0, "No SVG here")):
+            await ip_quality_handler(update, context)
+            mock_msg.reply_text.assert_called()
+
+    async def test_single_server_locked_message(self):
+        from services.ip_change_service import get_server_change_lock, perform_ip_change
+        lock = get_server_change_lock("default")
+        await lock.acquire()
+        try:
+            with patch("services.ip_change_service.is_multi_server_mode", return_value=False):
+                res = await perform_ip_change(trigger="manual")
+                self.assertFalse(res.success)
+                self.assertEqual(res.status, "LOCKED")
+                self.assertEqual(res.message, "正在执行换IP任务，请勿重复发起")
+                self.assertNotIn("[default]", res.message)
+        finally:
+            lock.release()
+
+
 if __name__ == "__main__":
     unittest.main()
 

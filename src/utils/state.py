@@ -1,9 +1,11 @@
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
 
 DEFAULT_STATE_FILE = "/var/lib/vps-ip-bot/state.json"
+_STATE_FILE_LOCK = threading.RLock()
 
 
 def _state_file() -> str:
@@ -81,40 +83,51 @@ def load_state() -> Dict[str, Any]:
 def save_state(data: Dict[str, Any]) -> None:
     _ensure_parent()
     target = _state_file()
-    temp_target = f"{target}.tmp.{os.getpid()}"
-    with open(temp_target, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(temp_target, target)
+    temp_target = f"{target}.tmp.{os.getpid()}.{time.perf_counter_ns()}"
+    with _STATE_FILE_LOCK:
+        try:
+            with open(temp_target, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(temp_target, target)
+        except Exception:
+            if os.path.exists(temp_target):
+                try:
+                    os.unlink(temp_target)
+                except Exception:
+                    pass
+            raise
 
 
 def load_server_state(server_id: str = "default") -> Dict[str, Any]:
-    state = load_state()
-    sid = str(server_id or "default").strip()
-    servers = state.get("servers", {})
-    if sid in servers:
-        s_data = _default_server_state()
-        s_data.update(servers[sid])
-        return s_data
-    if sid == "default":
-        s_data = _default_server_state()
-        for k in s_data:
-            if k in state:
-                s_data[k] = state[k]
-        return s_data
-    return _default_server_state()
+    with _STATE_FILE_LOCK:
+        state = load_state()
+        sid = str(server_id or "default").strip()
+        servers = state.get("servers", {})
+        if sid in servers:
+            s_data = _default_server_state()
+            s_data.update(servers[sid])
+            return s_data
+        if sid == "default":
+            s_data = _default_server_state()
+            for k in s_data:
+                if k in state:
+                    s_data[k] = state[k]
+            return s_data
+        return _default_server_state()
 
 
 def save_server_state(server_id: str, server_data: Dict[str, Any]) -> None:
-    sid = str(server_id or "default").strip()
-    state = load_state()
-    if "servers" not in state or not isinstance(state["servers"], dict):
-        state["servers"] = {}
-    state["servers"][sid] = server_data
-    if sid == "default":
-        for k, v in server_data.items():
-            state[k] = v
-    state["updated_at"] = time.time()
-    save_state(state)
+    with _STATE_FILE_LOCK:
+        sid = str(server_id or "default").strip()
+        state = load_state()
+        if "servers" not in state or not isinstance(state["servers"], dict):
+            state["servers"] = {}
+        state["servers"][sid] = server_data
+        if sid == "default":
+            for k, v in server_data.items():
+                state[k] = v
+        state["updated_at"] = time.time()
+        save_state(state)
 
 
 def update_server_state_keys(server_id: str, updates: Dict[str, Any]) -> None:
@@ -228,8 +241,9 @@ def get_user_selected_server(user_id: int | str) -> Optional[str]:
 
 
 def set_user_selected_server(user_id: int | str, server_id: str) -> None:
-    state = load_state()
-    if "user_active_servers" not in state or not isinstance(state["user_active_servers"], dict):
-        state["user_active_servers"] = {}
-    state["user_active_servers"][str(user_id)] = str(server_id).strip()
-    save_state(state)
+    with _STATE_FILE_LOCK:
+        state = load_state()
+        if "user_active_servers" not in state or not isinstance(state["user_active_servers"], dict):
+            state["user_active_servers"] = {}
+        state["user_active_servers"][str(user_id)] = str(server_id).strip()
+        save_state(state)

@@ -146,15 +146,25 @@ def persist_config_value(key: str, value) -> None:
         stripped = line.strip()
         if stripped.startswith(prefix) and not stripped.startswith("#"):
             indent = line[: len(line) - len(line.lstrip())]
-            lines[idx] = f"{indent}{key}: {rendered}"
-            found = True
-            break
+            # 严格匹配顶级配置项，避免误修改 servers 节点块内部同名子配置
+            if not indent:
+                lines[idx] = f"{key}: {rendered}"
+                found = True
+                break
     if not found:
         lines.append(f"{key}: {rendered}")
 
-    temp_path = path.with_suffix(".tmp")
-    temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    temp_path.replace(path)
+    temp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.perf_counter_ns()}")
+    try:
+        temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+        raise
 
 
 def parse_auto_change_time(raw_val: Optional[str] = None) -> datetime_time:
@@ -1165,7 +1175,8 @@ class VPSChangeIPBot:
                 mode_name = "Fachost 专用模式 (解析响应 JSON)"
             else:
                 mode_name = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
-            lines = [f"【{sname} ({sid}) 换IP配置与状态】", f"- 换IP模式: {mode_name} ({provider})"]
+            title = f"【{sname} ({sid}) 换IP配置与状态】" if is_multi_server_mode() else "【换IP配置与状态】"
+            lines = [title, f"- 换IP模式: {mode_name} ({provider})"]
 
             state = load_server_state(sid)
             if provider == "boil":
@@ -1411,15 +1422,19 @@ class VPSChangeIPBot:
         user_id = update.effective_user.id if update.effective_user else 0
         servers = get_servers()
 
+        msg = update.message or (update.callback_query.message if update.callback_query else None)
+        if not msg:
+            return
+
         if context.args:
             target = context.args[0].strip().lower()
             matched = get_server_config(target)
             if not matched:
                 avail = ", ".join([f"`{s['id']}`" for s in servers])
-                await update.message.reply_text(f"❌ 未找到 ID 为 `{target}` 的服务器。\n可用服务器 ID: {avail}", parse_mode="Markdown")
+                await msg.reply_text(f"❌ 未找到 ID 为 `{target}` 的服务器。\n可用服务器 ID: {avail}", parse_mode="Markdown")
                 return
             set_user_selected_server(user_id, matched["id"])
-            await update.message.reply_text(f"✅ 已将当前默认操作服务器切换为: 【{matched.get('name', matched['id'])}】 (`{matched['id']}`)", parse_mode="Markdown")
+            await msg.reply_text(f"✅ 已将当前默认操作服务器切换为: 【{matched.get('name', matched['id'])}】 (`{matched['id']}`)", parse_mode="Markdown")
             return
 
         keyboard = []
@@ -1436,7 +1451,7 @@ class VPSChangeIPBot:
         if row:
             keyboard.append(row)
 
-        await update.message.reply_text("请选择要切换的默认操作服务器：", reply_markup=InlineKeyboardMarkup(keyboard))
+        await msg.reply_text("请选择要切换的默认操作服务器：", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def server_action_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):

@@ -191,8 +191,10 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not await check_user_permission(update):
         return
 
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
     if not config.get("ip_quality_enabled", True):
-        await update.message.reply_text("IP 质量检测未启用。")
+        if msg:
+            await msg.reply_text("IP 质量检测未启用。")
         return
 
     user_id = update.effective_user.id if update.effective_user else 0
@@ -202,7 +204,6 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if prompt_shown:
         return
 
-    msg = update.message or (update.callback_query.message if update.callback_query else None)
     if not msg:
         return
 
@@ -247,7 +248,7 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         svg_urls = extract_svg_urls(output)
         if not svg_urls:
             preview = output[-3000:] if output else "无输出"
-            await update.message.reply_text(
+            await msg.reply_text(
                 text="IP 质量检测完成，但没有识别到 SVG 链接。\n"
                      f"命令返回码：{return_code}\n\n"
                      f"最近输出：\n{redact_text(preview)}"

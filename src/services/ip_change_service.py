@@ -639,10 +639,11 @@ async def perform_ip_change(
 
     lock = get_server_change_lock(sid)
     if lock.locked():
+        lock_msg = f"服务器 [{sname or sid}] 正在执行换IP任务，请勿重复发起" if is_multi_server_mode() else "正在执行换IP任务，请勿重复发起"
         return ChangeResult(
             success=False,
             status="LOCKED",
-            message=f"服务器 [{sname or sid}] 正在执行换IP任务，请勿重复发起",
+            message=lock_msg,
             trigger=trigger,
             server_id=sid,
             server_name=sname,
