@@ -156,11 +156,16 @@ class TestBoilNetworkUtils(unittest.TestCase):
 
 class TestIPChangeService(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        from config import config
+        self._orig_config = config.copy()
         self.tmp_dir = tempfile.mkdtemp()
         self.state_file = os.path.join(self.tmp_dir, "state.json")
         os.environ["VPS_IP_BOT_STATE_FILE"] = self.state_file
 
     def tearDown(self):
+        from config import config
+        config.clear()
+        config.update(self._orig_config)
         if os.path.exists(self.state_file):
             os.remove(self.state_file)
         if os.path.isdir(self.tmp_dir):
@@ -226,7 +231,8 @@ class TestIPChangeService(unittest.IsolatedAsyncioTestCase):
     async def test_generic_mode_success_flow(self, mock_dns, mock_get_ip, mock_get_req):
         from config import config
         config["ip_change_provider"] = "generic"
-        config["ip_change_api"] = "http://127.0.0.1:8080/reconnect"
+        config["remote_ssh_enabled"] = False
+        config["ip_change_api"] = "https://api.example.com/reconnect"
         config["ip_change_interval"] = 0
         config["ip_change_poll_retries"] = 3
         config["ip_change_poll_delay"] = 0
@@ -252,7 +258,8 @@ class TestIPChangeService(unittest.IsolatedAsyncioTestCase):
     async def test_fachost_mode_success_flow(self, mock_dns, mock_verify, mock_api):
         from config import config
         config["ip_change_provider"] = "fachost"
-        config["ip_change_api"] = "http://127.0.0.1:8080/change_ip"
+        config["remote_ssh_enabled"] = False
+        config["ip_change_api"] = "https://panel.fachost.com/change_ip"
         config["ip_change_interval"] = 0
 
         mock_api.return_value = {
@@ -528,10 +535,16 @@ class TestQualityDegradation(unittest.IsolatedAsyncioTestCase):
 
 class TestRemoteSSH(unittest.TestCase):
     def setUp(self):
+        from config import config
+        self._orig_config = config.copy()
+        config["ip_change_provider"] = "generic"
         from utils.remote_ssh import _DNS_LOCAL_CACHE
         _DNS_LOCAL_CACHE.clear()
 
     def tearDown(self):
+        from config import config
+        config.clear()
+        config.update(self._orig_config)
         from utils.remote_ssh import _DNS_LOCAL_CACHE
         _DNS_LOCAL_CACHE.clear()
 
@@ -643,6 +656,18 @@ class TestRemoteSSH(unittest.TestCase):
         # With force_refresh, calls resolver and updates cache
         self.assertEqual(resolve_target_host("fresh.example.com", force_refresh=True), "10.0.0.2")
         self.assertEqual(get_cached_host_ip("fresh.example.com"), "10.0.0.2")
+
+    @patch("utils.network.call_boil_get_ip")
+    def test_resolve_target_host_boil_mode(self, mock_boil_get):
+        from config import config
+        from utils.remote_ssh import resolve_target_host
+        config["ip_change_provider"] = "boil"
+        config["boil_api_token"] = "fake_token"
+        mock_boil_get.return_value = "103.150.12.34"
+
+        ip = resolve_target_host("dynamic.boil.net", force_refresh=True)
+        self.assertEqual(ip, "103.150.12.34")
+        mock_boil_get.assert_called_once()
 
     @patch("subprocess.run")
     @patch("utils.remote_ssh.resolve_target_host")
