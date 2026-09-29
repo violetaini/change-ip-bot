@@ -695,5 +695,48 @@ class TestSpeedtestFormatting(unittest.TestCase):
         self.assertIn("0.00 Mbps", res)
 
 
+class TestMainlandDomesticProbe(unittest.TestCase):
+    def test_resolve_mainland_target(self):
+        from utils.network import resolve_mainland_target
+        v4, v6 = resolve_mainland_target()
+        self.assertTrue(bool(v4))
+        self.assertTrue(bool(v6))
+        self.assertIn(".", v4)
+        self.assertIn(":", v6)
+
+    def test_probe_domestic_http_retry_success(self):
+        from utils.network import probe_domestic_http
+        mock_ssh = MagicMock()
+        # 1st attempt fails, 2nd attempt succeeds with HTTP 200 and 150ms latency
+        mock_ssh.side_effect = [
+            (1, ""),
+            (0, "200|0.150234"),
+        ]
+        ok, desc, ms = probe_domestic_http("198.51.100.1", 4, retries=3, timeout=2, run_ssh_fn=mock_ssh)
+        self.assertTrue(ok)
+        self.assertEqual(ms, 150)
+        self.assertIn("正常 (HTTP 200, 握手 150ms)", desc)
+        self.assertEqual(mock_ssh.call_count, 2)
+
+    def test_probe_domestic_http_all_failed(self):
+        from utils.network import probe_domestic_http
+        mock_ssh = MagicMock()
+        mock_ssh.return_value = (1, "")
+        ok, desc, ms = probe_domestic_http("198.51.100.1", 4, retries=3, timeout=1, run_ssh_fn=mock_ssh)
+        self.assertFalse(ok)
+        self.assertEqual(ms, 0)
+        self.assertIn("重试3次均失败", desc)
+        self.assertEqual(mock_ssh.call_count, 3)
+
+    def test_probe_domestic_http_v6(self):
+        from utils.network import probe_domestic_http
+        mock_ssh = MagicMock()
+        mock_ssh.return_value = (0, "200|0.280123")
+        ok, desc, ms = probe_domestic_http("2001:db8::1", 6, retries=2, timeout=2, run_ssh_fn=mock_ssh)
+        self.assertTrue(ok)
+        self.assertEqual(ms, 280)
+        self.assertIn("正常 (HTTP 200, 握手 280ms)", desc)
+
+
 if __name__ == "__main__":
     unittest.main()

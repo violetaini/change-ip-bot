@@ -6,7 +6,13 @@ from telegram.ext import ContextTypes
 from config import config
 from handlers.user_check import check_user_permission
 from utils.logger import logger
-from utils.network import call_boil_get_ip, check_ip_blocked
+from utils.network import (
+    call_boil_get_ip,
+    check_ip_blocked,
+    get_current_ip,
+    probe_domestic_http,
+    resolve_mainland_target,
+)
 
 
 async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -18,9 +24,11 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_name = update.effective_user.full_name
     logger.info(f"收到 check 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
 
-    await update.message.reply_text(text="正在检查IP状态...")
+    await update.message.reply_text(text="正在检查IP与境内连通性...")
 
     provider = str(config.get("ip_change_provider", "classic")).strip().lower()
+    from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, set_cached_host_ip
+
     if provider == "boil":
         token = str(config.get("boil_api_token", "")).strip()
         base_url = str(config.get("boil_api_base_url", "https://ippanel.boil.network")).strip()
@@ -28,48 +36,123 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
                 # 实时同步最新住宅IP到本地DNS映射，确保后续所有SSH诊断命令立即可用
-                from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config, set_cached_host_ip
                 raw_host = str(config.get("remote_ssh_host") or "").strip()
                 if raw_host and boil_ip:
                     set_cached_host_ip(raw_host, boil_ip)
 
-                extra_lines = []
-                if is_remote_ssh_enabled():
-                    cfg = get_ssh_config()
-                    try:
-                        code, _ = await asyncio.to_thread(
-                            run_remote_ssh_command,
-                            "curl -s --connect-timeout 5 -o /dev/null -w '%{http_code}' https://www.itdog.cn",
-                            timeout=10,
-                        )
-                        status_str = "正常" if code == 0 else "丢包/超时"
-                        extra_lines.append(f"- 家宽至国内连通性(itdog): {status_str}")
-                    except Exception as ex:
-                        extra_lines.append(f"- 家宽至国内连通性(itdog): 探测超时")
+                lines = [
+                    "【Boil 模式当前住宅IP】",
+                    f"- IPv4 地址: {boil_ip}",
+                ]
 
-                extra_text = ("\n" + "\n".join(extra_lines)) if extra_lines else ""
-                await update.message.reply_text(
-                    text=(
-                        f"【Boil 模式当前住宅IP】\n"
-                        f"- IP地址: {boil_ip}\n"
-                        f"- 状态: 正常（通过 Boil 官方 API 获取）{extra_text}\n"
-                        f"- 提示: 如需更换，可使用 /change 命令"
+                if is_remote_ssh_enabled():
+                    # 动态解析国内电信直连节点
+                    v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
+
+                    # 探测 IPv4 境内连通性 (带3次重试与超时)
+                    ok4, desc4, _ = await asyncio.to_thread(
+                        probe_domestic_http,
+                        v4_target,
+                        4,
+                        domain="v.qq.com",
+                        retries=3,
+                        timeout=4,
+                        run_ssh_fn=run_remote_ssh_command,
                     )
-                )
+                    lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc4}")
+
+                    # 检测远端公网 IPv6
+                    code_v6, out_v6 = await asyncio.to_thread(
+                        run_remote_ssh_command,
+                        "curl -6 -s --connect-timeout 3 -m 5 https://api64.ipify.org",
+                        timeout=8,
+                    )
+                    v6_ip = out_v6.strip() if (code_v6 == 0 and ":" in out_v6) else ""
+
+                    if v6_ip:
+                        ok6, desc6, _ = await asyncio.to_thread(
+                            probe_domestic_http,
+                            v6_target,
+                            6,
+                            domain="v.qq.com",
+                            retries=3,
+                            timeout=4,
+                            run_ssh_fn=run_remote_ssh_command,
+                        )
+                        lines.append(f"- IPv6 地址: {v6_ip}")
+                        lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc6}")
+                    else:
+                        lines.append("- IPv6 地址: 未分配 / 不支持")
+
+                lines.append("- 状态: 正常（通过 Boil 官方 API 获取）")
+                lines.append("- 提示: 如需更换，可使用 /change 命令")
+                await update.message.reply_text(text="\n".join(lines))
                 return
             except Exception as e:
                 await update.message.reply_text(text=f"通过 Boil API 获取IP失败: {e}")
                 return
 
+    # Classic 模式
     try:
-        is_blocked, current_ip = await asyncio.to_thread(check_ip_blocked)
-        if is_blocked:
-            await update.message.reply_text(
-                text=f"当前IP: {current_ip}\n出站连通性检测（至国内节点 www.itdog.cn）: 丢包率过高/连接超时\n如需更换，可使用 /change 命令"
+        if is_remote_ssh_enabled():
+            v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
+            code_v4, out_v4 = await asyncio.to_thread(
+                run_remote_ssh_command,
+                "curl -4 -s --connect-timeout 3 -m 5 https://api.ipify.org",
+                timeout=8,
             )
+            current_v4 = out_v4.strip() if code_v4 == 0 else "未知"
+
+            ok4, desc4, _ = await asyncio.to_thread(
+                probe_domestic_http,
+                v4_target,
+                4,
+                domain="v.qq.com",
+                retries=3,
+                timeout=4,
+                run_ssh_fn=run_remote_ssh_command,
+            )
+
+            code_v6, out_v6 = await asyncio.to_thread(
+                run_remote_ssh_command,
+                "curl -6 -s --connect-timeout 3 -m 5 https://api64.ipify.org",
+                timeout=8,
+            )
+            v6_ip = out_v6.strip() if (code_v6 == 0 and ":" in out_v6) else ""
+
+            lines = [
+                "【当前IP状态】",
+                f"- IPv4 地址: {current_v4}",
+                f"  • 境内连通性 (v.qq.com 电信): {desc4}",
+            ]
+
+            if v6_ip:
+                ok6, desc6, _ = await asyncio.to_thread(
+                    probe_domestic_http,
+                    v6_target,
+                    6,
+                    domain="v.qq.com",
+                    retries=3,
+                    timeout=4,
+                    run_ssh_fn=run_remote_ssh_command,
+                )
+                lines.append(f"- IPv6 地址: {v6_ip}")
+                lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc6}")
+            else:
+                lines.append("- IPv6 地址: 未分配 / 不支持")
+
+            lines.append("- 提示: 如需更换，可使用 /change 命令")
+            await update.message.reply_text(text="\n".join(lines))
         else:
+            is_blocked, current_ip = await asyncio.to_thread(check_ip_blocked)
+            status_text = "超时/丢包 (重试3次均失败)" if is_blocked else "正常"
             await update.message.reply_text(
-                text=f"当前IP: {current_ip}\n出站连通性检测（至国内节点 www.itdog.cn）: 正常"
+                text=(
+                    f"【当前IP状态】\n"
+                    f"- IPv4 地址: {current_ip}\n"
+                    f"  • 境内连通性 (v.qq.com 电信): {status_text}\n"
+                    f"- 提示: 如需更换，可使用 /change 命令"
+                )
             )
     except Exception as e:
         await update.message.reply_text(text=f"检查IP状态时出错: {str(e)}")
