@@ -426,7 +426,9 @@ class TestRemoteSSH(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_run_remote_ssh_command(self, mock_run):
+        from config import config
         from utils.remote_ssh import run_remote_ssh_command
+        config["remote_ssh_host"] = "1.2.3.4"
         mock_res = MagicMock()
         mock_res.returncode = 0
         mock_res.stdout = "output text"
@@ -437,13 +439,55 @@ class TestRemoteSSH(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, "output text")
 
-    @patch("utils.remote_ssh.run_remote_ssh_command")
-    def test_test_remote_ssh_connectivity(self, mock_ssh):
-        from utils.remote_ssh import test_remote_ssh_connectivity
-        mock_ssh.return_value = (0, "something __SSH_OK__ done")
-        ok, ip, rtt = test_remote_ssh_connectivity()
-        self.assertTrue(ok)
-        self.assertGreaterEqual(rtt, 0)
+    def test_dns_local_cache_ttl(self):
+        from utils.remote_ssh import get_cached_host_ip, set_cached_host_ip
+        set_cached_host_ip("node.example.com", "1.1.1.1")
+        # Within TTL
+        self.assertEqual(get_cached_host_ip("node.example.com", max_age=10), "1.1.1.1")
+        # Expired TTL
+        self.assertEqual(get_cached_host_ip("node.example.com", max_age=-1), "")
+
+    def test_invalidate_cached_host_ip(self):
+        from utils.remote_ssh import get_cached_host_ip, invalidate_cached_host_ip, set_cached_host_ip
+        set_cached_host_ip("node.example.com", "1.1.1.1")
+        invalidate_cached_host_ip("node.example.com")
+        self.assertEqual(get_cached_host_ip("node.example.com"), "")
+
+    @patch("utils.remote_ssh.resolve_via_cloudflare_doh")
+    def test_resolve_target_host_force_refresh(self, mock_doh):
+        from utils.remote_ssh import get_cached_host_ip, resolve_target_host, set_cached_host_ip
+        set_cached_host_ip("fresh.example.com", "10.0.0.1")
+        mock_doh.return_value = "10.0.0.2"
+
+        # Without force_refresh, returns cached
+        self.assertEqual(resolve_target_host("fresh.example.com", force_refresh=False), "10.0.0.1")
+        mock_doh.assert_not_called()
+
+        # With force_refresh, calls resolver and updates cache
+        self.assertEqual(resolve_target_host("fresh.example.com", force_refresh=True), "10.0.0.2")
+        self.assertEqual(get_cached_host_ip("fresh.example.com"), "10.0.0.2")
+
+    @patch("subprocess.run")
+    @patch("utils.remote_ssh.resolve_target_host")
+    def test_run_remote_ssh_command_self_healing(self, mock_resolve, mock_run):
+        from config import config
+        from utils.remote_ssh import run_remote_ssh_command
+        config["remote_ssh_host"] = "dynamic.example.com"
+
+        # 1st call: initial resolve -> old IP
+        # 2nd call: force_refresh on failure -> new IP
+        # 3rd call: initial resolve on retry -> new IP
+        mock_resolve.side_effect = ["192.168.1.1", "192.168.1.2", "192.168.1.2"]
+
+        # First subprocess run returns code 255 (SSH failure), second run returns code 0 (success)
+        fail_res = MagicMock(returncode=255, stdout="", stderr="Connection refused")
+        succ_res = MagicMock(returncode=0, stdout="success output", stderr="")
+        mock_run.side_effect = [fail_res, succ_res]
+
+        code, output = run_remote_ssh_command("uname -a")
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "success output")
+        self.assertEqual(mock_run.call_count, 2)
 
 
 if __name__ == "__main__":

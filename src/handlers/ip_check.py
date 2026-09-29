@@ -27,8 +27,13 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if token:
             try:
                 boil_ip = await asyncio.to_thread(call_boil_get_ip, base_url, token, 15)
+                # 实时同步最新住宅IP到本地DNS映射，确保后续所有SSH诊断命令立即可用
+                from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config, set_cached_host_ip
+                raw_host = str(config.get("remote_ssh_host") or "").strip()
+                if raw_host and boil_ip:
+                    set_cached_host_ip(raw_host, boil_ip)
+
                 extra_lines = []
-                from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config
                 if is_remote_ssh_enabled():
                     cfg = get_ssh_config()
                     try:
