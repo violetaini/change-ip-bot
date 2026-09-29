@@ -45,44 +45,61 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"- IPv4 地址: {boil_ip}",
                 ]
 
-                if is_remote_ssh_enabled():
-                    # 动态解析国内电信直连节点
-                    v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
+                ssh_enabled = is_remote_ssh_enabled()
+                ssh_fn = run_remote_ssh_command if ssh_enabled else None
 
-                    # 探测 IPv4 境内连通性 (带3次重试与超时)
-                    ok4, desc4, _ = await asyncio.to_thread(
-                        probe_domestic_http,
-                        v4_target,
-                        4,
-                        domain="v.qq.com",
-                        retries=3,
-                        timeout=4,
-                        run_ssh_fn=run_remote_ssh_command,
-                    )
-                    lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc4}")
+                # 动态解析国内电信直连节点
+                v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
 
-                    # 检测远端公网 IPv6
+                # 探测 IPv4 境内连通性 (带3次重试与超时)
+                ok4, desc4, _ = await asyncio.to_thread(
+                    probe_domestic_http,
+                    v4_target,
+                    4,
+                    domain="v.qq.com",
+                    retries=3,
+                    timeout=4,
+                    run_ssh_fn=ssh_fn,
+                )
+                lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc4}")
+
+                # 检测公网 IPv6
+                if ssh_enabled:
                     code_v6, out_v6 = await asyncio.to_thread(
                         run_remote_ssh_command,
                         "curl -6 -s --connect-timeout 3 -m 5 https://api64.ipify.org",
                         timeout=8,
                     )
                     v6_ip = out_v6.strip() if (code_v6 == 0 and ":" in out_v6) else ""
+                else:
+                    def _get_local_v6():
+                        try:
+                            import subprocess
+                            res = subprocess.run(
+                                ["curl", "-6", "-s", "--connect-timeout", "3", "-m", "5", "https://api64.ipify.org"],
+                                capture_output=True,
+                                text=True,
+                                timeout=8,
+                            )
+                            return res.stdout.strip() if (res.returncode == 0 and ":" in res.stdout) else ""
+                        except Exception:
+                            return ""
+                    v6_ip = await asyncio.to_thread(_get_local_v6)
 
-                    if v6_ip:
-                        ok6, desc6, _ = await asyncio.to_thread(
-                            probe_domestic_http,
-                            v6_target,
-                            6,
-                            domain="v.qq.com",
-                            retries=3,
-                            timeout=4,
-                            run_ssh_fn=run_remote_ssh_command,
-                        )
-                        lines.append(f"- IPv6 地址: {v6_ip}")
-                        lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc6}")
-                    else:
-                        lines.append("- IPv6 地址: 未分配 / 不支持")
+                if v6_ip:
+                    ok6, desc6, _ = await asyncio.to_thread(
+                        probe_domestic_http,
+                        v6_target,
+                        6,
+                        domain="v.qq.com",
+                        retries=3,
+                        timeout=4,
+                        run_ssh_fn=ssh_fn,
+                    )
+                    lines.append(f"- IPv6 地址: {v6_ip}")
+                    lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc6}")
+                else:
+                    lines.append("- IPv6 地址: 未分配 / 不支持")
 
                 lines.append("- 状态: 正常（通过 Boil 官方 API 获取）")
                 lines.append("- 提示: 如需更换，可使用 /change 命令")
@@ -94,65 +111,75 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Classic 模式
     try:
-        if is_remote_ssh_enabled():
-            v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
+        ssh_enabled = is_remote_ssh_enabled()
+        ssh_fn = run_remote_ssh_command if ssh_enabled else None
+
+        if ssh_enabled:
             code_v4, out_v4 = await asyncio.to_thread(
                 run_remote_ssh_command,
                 "curl -4 -s --connect-timeout 3 -m 5 https://api.ipify.org",
                 timeout=8,
             )
             current_v4 = out_v4.strip() if code_v4 == 0 else "未知"
+        else:
+            current_v4 = await asyncio.to_thread(get_current_ip)
 
-            ok4, desc4, _ = await asyncio.to_thread(
-                probe_domestic_http,
-                v4_target,
-                4,
-                domain="v.qq.com",
-                retries=3,
-                timeout=4,
-                run_ssh_fn=run_remote_ssh_command,
-            )
+        v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
 
+        ok4, desc4, _ = await asyncio.to_thread(
+            probe_domestic_http,
+            v4_target,
+            4,
+            domain="v.qq.com",
+            retries=3,
+            timeout=4,
+            run_ssh_fn=ssh_fn,
+        )
+
+        if ssh_enabled:
             code_v6, out_v6 = await asyncio.to_thread(
                 run_remote_ssh_command,
                 "curl -6 -s --connect-timeout 3 -m 5 https://api64.ipify.org",
                 timeout=8,
             )
             v6_ip = out_v6.strip() if (code_v6 == 0 and ":" in out_v6) else ""
-
-            lines = [
-                "【当前IP状态】",
-                f"- IPv4 地址: {current_v4}",
-                f"  • 境内连通性 (v.qq.com 电信): {desc4}",
-            ]
-
-            if v6_ip:
-                ok6, desc6, _ = await asyncio.to_thread(
-                    probe_domestic_http,
-                    v6_target,
-                    6,
-                    domain="v.qq.com",
-                    retries=3,
-                    timeout=4,
-                    run_ssh_fn=run_remote_ssh_command,
-                )
-                lines.append(f"- IPv6 地址: {v6_ip}")
-                lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc6}")
-            else:
-                lines.append("- IPv6 地址: 未分配 / 不支持")
-
-            lines.append("- 提示: 如需更换，可使用 /change 命令")
-            await update.message.reply_text(text="\n".join(lines))
         else:
-            is_blocked, current_ip = await asyncio.to_thread(check_ip_blocked)
-            status_text = "超时/丢包 (重试3次均失败)" if is_blocked else "正常"
-            await update.message.reply_text(
-                text=(
-                    f"【当前IP状态】\n"
-                    f"- IPv4 地址: {current_ip}\n"
-                    f"  • 境内连通性 (v.qq.com 电信): {status_text}\n"
-                    f"- 提示: 如需更换，可使用 /change 命令"
-                )
+            def _get_local_v6_classic():
+                try:
+                    import subprocess
+                    res = subprocess.run(
+                        ["curl", "-6", "-s", "--connect-timeout", "3", "-m", "5", "https://api64.ipify.org"],
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                    )
+                    return res.stdout.strip() if (res.returncode == 0 and ":" in res.stdout) else ""
+                except Exception:
+                    return ""
+            v6_ip = await asyncio.to_thread(_get_local_v6_classic)
+
+        lines = [
+            "【当前IP状态】",
+            f"- IPv4 地址: {current_v4}",
+            f"  • 境内连通性 (v.qq.com 电信): {desc4}",
+        ]
+
+        if v6_ip:
+            ok6, desc6, _ = await asyncio.to_thread(
+                probe_domestic_http,
+                v6_target,
+                6,
+                domain="v.qq.com",
+                retries=3,
+                timeout=4,
+                run_ssh_fn=ssh_fn,
             )
+            lines.append(f"- IPv6 地址: {v6_ip}")
+            lines.append(f"  • 境内连通性 (v.qq.com 电信): {desc6}")
+        else:
+            lines.append("- IPv6 地址: 未分配 / 不支持")
+
+        lines.append("- 提示: 如需更换，可使用 /change 命令")
+        await update.message.reply_text(text="\n".join(lines))
     except Exception as e:
         await update.message.reply_text(text=f"检查IP状态时出错: {str(e)}")
