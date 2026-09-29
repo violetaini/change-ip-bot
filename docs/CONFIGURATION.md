@@ -17,7 +17,8 @@ This document provides a comprehensive reference, parameter breakdown, and confi
 5. [Scheduled Automated Changes & Propagation Verification](#5-scheduled-automated-changes--propagation-verification)
 6. [Remote Residential SSH Tunnel & Self-Healing](#6-remote-residential-ssh-tunnel--self-healing)
 7. [Network Diagnostics Tuning (Ping / Quality / Stream)](#7-network-diagnostics-tuning-ping--quality--stream)
-8. [Full Example Template](#8-full-example-template)
+8. [Multi-Server Management Configuration](#8-multi-server-management-configuration)
+9. [Full Example Template](#9-full-example-template)
 
 ---
 
