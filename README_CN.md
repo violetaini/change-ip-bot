@@ -133,16 +133,35 @@ apt install -y python3 python3-pip python3-venv curl libcairo2 fonts-wqy-zenhei
 
 *(可选：若宿主机安装了 `chromium`，机器人将优先使用 Chromium 无头截图生成 `/quality` 报告，未安装时自动回退为 Python 内置 CairoSVG 渲染)*
 
-### 2. 部署项目
+### 2. 部署与安装
 
-你可以直接使用源码部署：
+提供两种安装方式，任选其一即可：
+
+#### 方式 A：直接下载 GitHub 静态源码包（无需安装 Git，推荐）
+
+```bash
+mkdir -p /opt/vps-change-ip
+cd /opt/vps-change-ip
+
+# 使用 wget 直接下载并解包 GitHub 静态资源 (tar.gz)
+wget -qO- https://github.com/violetaini/change-ip-bot/archive/refs/heads/main.tar.gz | tar -zxvf - --strip-components=1
+
+# 或使用 zip 压缩包下载解压：
+# wget -O main.zip https://github.com/violetaini/change-ip-bot/archive/refs/heads/main.zip && unzip -o main.zip && cp -r change-ip-bot-main/* . && rm -rf change-ip-bot-main main.zip
+```
+
+#### 方式 B：通过 Git 仓库克隆（便于后续 git pull 升级）
 
 ```bash
 mkdir -p /opt/vps-change-ip
 cd /opt/vps-change-ip
 git clone https://github.com/violetaini/change-ip-bot.git .
+```
 
-# 创建 Python 虚拟环境并安装依赖
+#### 创建 Python 虚拟环境并安装依赖
+
+```bash
+cd /opt/vps-change-ip
 python3 -m venv venv
 source venv/bin/activate
 pip install -U pip

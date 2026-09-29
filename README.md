@@ -135,14 +135,33 @@ apt install -y python3 python3-pip python3-venv curl libcairo2 fonts-wqy-zenhei
 
 ### 2. Installation
 
-Clone the repository:
+You can install via direct GitHub static asset download (no Git required) or via Git clone:
+
+#### Option A: Direct Download via wget / curl (Recommended, no Git required)
+
+```bash
+mkdir -p /opt/vps-change-ip
+cd /opt/vps-change-ip
+
+# Directly download and unpack GitHub tarball using wget:
+wget -qO- https://github.com/violetaini/change-ip-bot/archive/refs/heads/main.tar.gz | tar -zxvf - --strip-components=1
+
+# Or download zip archive:
+# wget -O main.zip https://github.com/violetaini/change-ip-bot/archive/refs/heads/main.zip && unzip -o main.zip && cp -r change-ip-bot-main/* . && rm -rf change-ip-bot-main main.zip
+```
+
+#### Option B: Clone via Git (Convenient for future git pull updates)
 
 ```bash
 mkdir -p /opt/vps-change-ip
 cd /opt/vps-change-ip
 git clone https://github.com/violetaini/change-ip-bot.git .
+```
 
-# Create virtual environment and install requirements
+#### Setup Virtual Environment & Install Dependencies
+
+```bash
+cd /opt/vps-change-ip
 python3 -m venv venv
 source venv/bin/activate
 pip install -U pip
