@@ -259,6 +259,41 @@ journalctl -u vps-ip-bot -f
 
 ---
 
+## 🗑️ 卸载与完全清理
+
+如需从服务器彻底移除 VPS IP Bot，执行以下步骤即可：
+
+### 1. 停止并移除 Systemd 服务
+
+```bash
+# 停止运行中的服务并禁用自启
+systemctl stop vps-ip-bot
+systemctl disable vps-ip-bot
+
+# 移除服务单元文件并重载配置
+rm -f /etc/systemd/system/vps-ip-bot.service
+systemctl daemon-reload
+systemctl reset-failed
+```
+
+### 2. 清理工作目录与持久化数据
+
+```bash
+# 删除程序运行目录（虚拟环境、代码与本地配置）
+rm -rf /opt/vps-change-ip
+
+# 删除运行时状态数据目录（如有）
+rm -rf /var/lib/vps-ip-bot
+```
+
+### 一键卸载指令
+
+```bash
+systemctl stop vps-ip-bot && systemctl disable vps-ip-bot && rm -f /etc/systemd/system/vps-ip-bot.service && systemctl daemon-reload && rm -rf /opt/vps-change-ip /var/lib/vps-ip-bot
+```
+
+---
+
 ## 🧪 自动化测试
 
 项目内置了完备的自动化单元测试集，包含配置加载、脱敏安全、状态机、多云 DNS、远程 SSH 零延迟重试自愈、EDNS 境内穿透探测、流媒体与测速双栈格式化等：

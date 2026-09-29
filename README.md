@@ -259,6 +259,41 @@ journalctl -u vps-ip-bot -f
 
 ---
 
+## 🗑️ Uninstallation
+
+To completely remove VPS IP Bot from your server, follow these steps:
+
+### 1. Stop and Remove the Systemd Service
+
+```bash
+# Stop the running service and disable auto-start
+systemctl stop vps-ip-bot
+systemctl disable vps-ip-bot
+
+# Remove service unit file and reload daemon
+rm -f /etc/systemd/system/vps-ip-bot.service
+systemctl daemon-reload
+systemctl reset-failed
+```
+
+### 2. Remove Application Directory & Data
+
+```bash
+# Delete application directory (virtualenv, code, and config)
+rm -rf /opt/vps-change-ip
+
+# Remove runtime persistent state directory (if applicable)
+rm -rf /var/lib/vps-ip-bot
+```
+
+### One-Line Complete Uninstall Command
+
+```bash
+systemctl stop vps-ip-bot && systemctl disable vps-ip-bot && rm -f /etc/systemd/system/vps-ip-bot.service && systemctl daemon-reload && rm -rf /opt/vps-change-ip /var/lib/vps-ip-bot
+```
+
+---
+
 ## 🧪 Testing
 
 The repository includes a comprehensive unit test suite covering configuration validation, credential redaction, state management, multi-provider routing, zero-delay SSH self-healing, EDNS domestic reachability, and dual-stack formatters:
