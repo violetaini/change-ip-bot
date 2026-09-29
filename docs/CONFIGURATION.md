@@ -127,6 +127,13 @@ boil_api_token: "your_boil_api_token_here"
 
 Automatically updates DNS records upon IP rotation:
 
+> [!IMPORTANT]
+> **DDNS Behavior under Remote SSH Mode**:
+> - When Remote SSH is enabled (`remote_ssh_enabled: true`) and provider is `generic` or `fachost`, the bot **automatically skips DDNS updates**. In this topology, the remote node must maintain its own independent DDNS (e.g. built-in router DDNS, ddns-go) to prevent domain overwrites and SSH deadlocks.
+> - To have the bot manage DDNS updates, choose one of the following topologies:
+>   1. **Local Standalone Deployment** (Recommended): Deploy directly on target node (`remote_ssh_enabled: false`) with `generic` or `fachost`.
+>   2. **Boil Cloud Mode**: Deploy on external VPS (`ip_change_provider: "boil"`), querying new IPs authoritatively via Boil cloud API.
+
 ### Common DNS Structure
 
 ```yaml

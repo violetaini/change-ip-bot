@@ -127,6 +127,13 @@ boil_api_token: "your_boil_api_token_here"
 
 换 IP 成功后，Bot 可自动将新公网 IP 同步更新至各大域名托管商。
 
+> [!IMPORTANT]
+> **远程 SSH 模式下的 DDNS 规则**：
+> - 当开启远程 SSH（`remote_ssh_enabled: true`）且模式为 `generic` 或 `fachost` 时，Bot 将**自动跳过 DDNS 更新**。因为在此架构下，外部 VPS 依赖远端主机的固定域名/独立 DDNS（如软路由内嵌 DDNS、ddns-go）维持连接，避免覆盖与寻址死锁。
+> - 若需要 Bot 自身执行 DDNS 更新，请采用：
+>   1. **单机本地部署**（推荐）：直接安装在家宽/软路由本机（`remote_ssh_enabled: false`），由 Bot 本地检测新 IP 并更新 DDNS。
+>   2. **Boil 住宅模式**：外部 VPS 部署（`ip_change_provider: "boil"`），通过官方云端 API 权威获取新 IP 并更新 DDNS。
+
 ### 统一 DNS 配置结构
 
 ```yaml

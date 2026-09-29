@@ -300,6 +300,40 @@ class TestIPChangeService(unittest.IsolatedAsyncioTestCase):
         ssh_calls = [c[0][0] for c in mock_ssh.call_args_list]
         self.assertTrue(any("192.168.1.1" in c for c in ssh_calls))
 
+    @patch("services.ip_change_service.update_dns_if_enabled")
+    def test_ssh_mode_skips_ddns_for_generic_and_fachost(self, mock_update_dns):
+        from config import config
+        from services.ip_change_service import _update_dns_safely
+
+        # 1. SSH is enabled, provider is generic -> DDNS skipped
+        config["remote_ssh_enabled"] = True
+        config["ip_change_provider"] = "generic"
+        msg = _update_dns_safely("1.2.3.4")
+        self.assertIn("远程 SSH 模式下不执行 DDNS 更新", msg)
+        mock_update_dns.assert_not_called()
+
+        # 2. SSH is enabled, provider is fachost -> DDNS skipped
+        config["ip_change_provider"] = "fachost"
+        msg2 = _update_dns_safely("1.2.3.4")
+        self.assertIn("远程 SSH 模式下不执行 DDNS 更新", msg2)
+        mock_update_dns.assert_not_called()
+
+        # 3. SSH is enabled, provider is boil -> DDNS is allowed
+        config["ip_change_provider"] = "boil"
+        mock_update_dns.return_value = "DNS updated successfully"
+        msg3 = _update_dns_safely("1.2.3.4")
+        self.assertEqual(msg3, "DNS updated successfully")
+        mock_update_dns.assert_called_once_with("1.2.3.4")
+
+        # 4. SSH is disabled, provider is generic -> DDNS is allowed
+        mock_update_dns.reset_mock()
+        config["remote_ssh_enabled"] = False
+        config["ip_change_provider"] = "generic"
+        mock_update_dns.return_value = "DNS updated successfully"
+        msg4 = _update_dns_safely("1.2.3.4")
+        self.assertEqual(msg4, "DNS updated successfully")
+        mock_update_dns.assert_called_once_with("1.2.3.4")
+
 
 class TestBotHelpers(unittest.TestCase):
     def test_admin_id_parsing(self):

@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import ipaddress
+import json
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ async def _wait_for_public_ip_change(old_ip: str, retries: int = 12, delay: int 
     for idx in range(retries):
         await asyncio.sleep(delay)
         try:
-            current_ip = await asyncio.to_thread(get_current_ip)
+            current_ip = await asyncio.to_thread(get_active_public_ipv4)
             logger.info(f"超时兜底校验第 {idx + 1}/{retries} 次，当前公网IP: {current_ip}")
             if current_ip and current_ip != old_ip:
                 return current_ip
@@ -110,6 +111,9 @@ async def _verify_changed_ip(target_ip: str) -> bool:
     await asyncio.sleep(int(config.get("ip_change_verify_delay", 5)))
     retry_count = int(config.get("ip_change_retry_verify_count", 3))
     for _ in range(retry_count):
+        curr = await asyncio.to_thread(get_active_public_ipv4)
+        if curr and curr == target_ip:
+            return True
         if await asyncio.to_thread(verify_public_ip_matches, target_ip):
             return True
         await asyncio.sleep(3)
@@ -126,6 +130,14 @@ def _update_dns_safely(new_ip: str) -> str:
                 set_cached_host_ip(hostname, new_ip)
     except Exception as ex:
         logger.debug(f"更新本地DNS映射异常: {ex}")
+
+    provider = get_ip_change_provider_name()
+    # 核心规则：当开启了远程 SSH，且使用的是 generic 或 fachost 模式时，不支持/跳过由 Bot 更新 DDNS
+    # （因为远程 SSH 模式下，远端主机自身必须自建独立 DDNS 维护其外部域名；且此架构下禁用 Bot DDNS 避免覆盖与死锁）
+    if is_remote_ssh_enabled() and provider in ("generic", "fachost", "classic"):
+        msg = "远程 SSH 模式下不执行 DDNS 更新（由远端主机独立 DDNS 维护）"
+        logger.info(msg)
+        return msg
 
     try:
         return update_dns_if_enabled(new_ip)
@@ -339,16 +351,31 @@ async def _perform_fachost_ip_change(trigger: str = "manual") -> ChangeResult:
 
     public_old_ip = ""
     try:
-        public_old_ip = await asyncio.to_thread(get_current_ip)
+        public_old_ip = await asyncio.to_thread(get_active_public_ipv4)
     except Exception as e:
         logger.warning(f"更换前获取公网IP失败，将尽量按接口响应判断: {e}")
 
     try:
-        api_data = await asyncio.to_thread(
-            call_change_ip_api,
-            api_url,
-            int(config.get("ip_change_timeout", 600)),
-        )
+        is_private_api = is_private_or_local_target(api_url)
+        if is_remote_ssh_enabled() and is_private_api:
+            logger.info(f"[Fachost模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 在家宽内部调用 curl 触发...")
+            timeout_sec = int(config.get("ip_change_timeout", 600))
+            code, out = await asyncio.to_thread(
+                run_remote_ssh_command,
+                f"curl -s -m {timeout_sec} '{api_url}'",
+                timeout=timeout_sec + 10,
+                allow_retry_on_ip_change=False,
+            )
+            try:
+                api_data = json.loads(out)
+            except Exception:
+                raise RuntimeError(f"远程 SSH 触发换IP API 返回的不是 JSON: {out[:200]}")
+        else:
+            api_data = await asyncio.to_thread(
+                call_change_ip_api,
+                api_url,
+                int(config.get("ip_change_timeout", 600)),
+            )
 
         parsed = parse_change_ip_result(api_data)
         status = parsed["status"]

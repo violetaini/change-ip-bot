@@ -123,11 +123,11 @@ The bot supports three distinct operational engines tailored for different infra
 
 ### Deployment Topology Comparison
 
-| Deployment Target | Target Node / Machine | Recommended Mode | SSH State (`remote_ssh_enabled`) | Architectural Highlights |
+| Deployment Target | Machine / Mode | SSH State (`remote_ssh_enabled`) | DDNS Managed By | Architectural Highlights |
 | :--- | :--- | :---: | :---: | :--- |
-| **Installed Locally on Target Node** | **Generic Soft Router** / Dialer | **Generic (`generic`)** | **Disabled** (`false`) | Triggers API and discovers new IP via local `curl -4 ip.sb`. |
-| **Installed Locally on Dynamic VPS** | **Fachost** Dynamic VPS | **Fachost (`fachost`)** | **Disabled** (`false`) | Parses Fachost JSON response + verifies local egress IP. |
-| **Installed on Independent VPS** | **Boil Network** Residential Host | **Boil (`boil`)** | **Enabled** (`true`) | Cloud-controlled rotation + SSH-tunneled network diagnostics. |
+| **Installed Locally on Target Node** | **Soft Router** / Host (`generic` / `fachost`) | **Disabled** (`false`) | **Bot Auto-Sync** | Local rotation -> local detection -> instant DNS update. Standalone 100% closed loop. |
+| **Installed on Independent VPS** | **Remote Node** (`generic` / `fachost`) | **Enabled** (`true`) | **Remote Host DDNS (Bot Skips)** | Control/tests via SSH; Bot automatically skips DDNS to prevent overwrites & deadlocks. |
+| **Installed on Independent VPS** | **Boil Network** Residential Host (`boil`) | **Enabled** (`true`) | **Bot Auto-Sync** | Rotation/querying via cloud API, Bot auto-syncs DNS, diagnostics tunnel via SSH. |
 
 ---
 
