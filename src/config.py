@@ -58,7 +58,7 @@ DEFAULT_CONFIG = {
     "ip_quality_cmd": "bash <(curl -sL https://IP.Check.Place) -y",
     "stream_check_enabled": True,
     "stream_check_cmd": "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)",
-    "stream_check_input": "1",
+    "stream_check_input": "2",
     "stream_check_timeout": 1200,
     "remote_ssh_enabled": False,
     "remote_ssh_host": "",

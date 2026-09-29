@@ -71,7 +71,7 @@ Supports both **Classic HTTP IP Change APIs** and **Boil Network residential IP 
 /dns_update_on       Enable DNS updates, super admin only
 /dns_update_off      Disable DNS updates, super admin only
 /quality [-4/-6]    Run IP quality check (auto dual-stack IPv4 & IPv6 media group)
-/stream              Run streaming unlock check and send summary
+/stream [region]     Run streaming unlock check (auto dual-stack IPv4 & IPv6 summary)
 /ping                Test network latency
 /speedtest           Run network speed test
 ```
@@ -268,7 +268,7 @@ journalctl -u vps-ip-bot -f
 - The bot stores runtime state in `/var/lib/vps-ip-bot/state.json` by default.
 - You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
 - `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG. On dual-stack nodes, it automatically detects and delivers both IPv4 and IPv6 reports as a Telegram media group, or you can specify `/quality -4` or `/quality -6`.
-- `/stream` runs the RegionRestrictionCheck script, automatically inputs `1`, and sends a concise summary instead of the full raw output.
+- `/stream` runs the RegionRestrictionCheck script and separates IPv4 & IPv6 dual-stack results clearly in the summary report. Supports optional region arguments (e.g. `/stream 2` for HK, `/stream 1` for TW, `/stream 3` for JP, `/stream 0` for Global only).
 - `/manage_users` can only be used by a super admin and provides button-based regular admin management. Admins are shown as buttons; tap one to select it, then tap delete. Adding an admin uses the button flow and then asks for the Telegram user ID.
 - `/set_dns_provider`, `/set_dns_record`, `/dns_update_on`, and `/dns_update_off` can only be used by a super admin and write non-secret DNS settings to `config.yaml`.
 - `/speedtest` requires the `speedtest` CLI to be installed on the server.

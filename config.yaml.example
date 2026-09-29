@@ -94,7 +94,8 @@ ip_quality_cmd: "bash <(curl -sL https://IP.Check.Place) -y"
 # 流媒体解锁检测配置
 stream_check_enabled: true
 stream_check_cmd: "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
-stream_check_input: "1"
+# 脚本交互自动输入选项（2=跨国+香港, 1=跨国+台湾, 3=日本, 4=北美, 0=仅跨国, 10=AI平台）
+stream_check_input: "2"
 stream_check_timeout: 1200
 
 # 远程家宽机器 SSH 配置（开启后 quality、stream、speedtest、ping 将通过 SSH 在家宽机上运行）

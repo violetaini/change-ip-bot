@@ -161,31 +161,96 @@ def extract_relevant_lines(lines: list[str]) -> list[str]:
     return relevant[-25:]
 
 
+def split_sections_by_ip_version(lines: list[str]) -> dict[str, dict]:
+    """Split script output lines into IPv4 and IPv6 sections with network provider info."""
+    sections = {
+        "v4": {"network": "", "lines": []},
+        "v6": {"network": "", "lines": []},
+        "general": {"network": "", "lines": []},
+    }
+    current_key = "general"
+
+    for line in lines:
+        stripped = strip_ansi(line).strip()
+        if re.search(r"正在测试\s*IPv4|Checking Results Under\s*IPv4", stripped, re.IGNORECASE):
+            current_key = "v4"
+            continue
+        elif re.search(r"正在测试\s*IPv6|Checking Results Under\s*IPv6", stripped, re.IGNORECASE):
+            current_key = "v6"
+            continue
+
+        net_match = re.search(r"(?:您的网络为|Your Network Provider)\s*:\s*(.+)", stripped, re.IGNORECASE)
+        if net_match and current_key in ("v4", "v6") and not sections[current_key]["network"]:
+            sections[current_key]["network"] = net_match.group(1).strip()
+            continue
+
+        sections[current_key]["lines"].append(line)
+
+    return sections
+
+
 def build_stream_summary(return_code: int, output: str, elapsed: float) -> str:
     redacted = redact_text(strip_ansi(output))
     lines = [line.strip() for line in redacted.splitlines() if line.strip()]
-    results = find_service_results(lines)
+    sections = split_sections_by_ip_version(lines)
+
+    v4_results = find_service_results(sections["v4"]["lines"]) if sections["v4"]["lines"] else []
+    v6_results = find_service_results(sections["v6"]["lines"]) if sections["v6"]["lines"] else []
+
+    is_dual_stack = bool(v4_results and v6_results)
+    stack_tag = "双栈" if is_dual_stack else ("单栈 IPv4" if v4_results else ("单栈 IPv6" if v6_results else ""))
 
     header = [
-        "流媒体检测简报",
+        f"流媒体检测简报 ({stack_tag})" if stack_tag else "流媒体检测简报",
         f"脚本返回码: {return_code}",
         f"耗时: {elapsed:.0f} 秒",
     ]
 
-    if results:
-        body = ["", "重点结果:"]
-        body.extend(f"- {name}: {result}" for name, result in results[:18])
-    else:
-        relevant = extract_relevant_lines(lines)
-        body = ["", "未能结构化提取重点服务，以下是有效输出摘录:"]
-        body.extend(f"- {line}" for line in relevant[:25])
-        if not relevant:
-            body.append("- 脚本没有返回可识别的检测结果")
+    body = []
+    if v4_results:
+        v4_info = f" ({sections['v4']['network']})" if sections['v4']['network'] else ""
+        body.append(f"\n🌐【IPv4 解锁结果】{v4_info}")
+        body.extend(f"- {name}: {result}" for name, result in v4_results[:18])
+
+    if v6_results:
+        v6_info = f" ({sections['v6']['network']})" if sections['v6']['network'] else ""
+        body.append(f"\n🌐【IPv6 解锁结果】{v6_info}")
+        body.extend(f"- {name}: {result}" for name, result in v6_results[:18])
+
+    if not v4_results and not v6_results:
+        # Fallback to general parsing if headers were not matched
+        general_results = find_service_results(lines)
+        if general_results:
+            body.append("\n重点结果:")
+            body.extend(f"- {name}: {result}" for name, result in general_results[:18])
+        else:
+            relevant = extract_relevant_lines(lines)
+            body.append("\n未能结构化提取重点服务，以下是有效输出摘录:")
+            body.extend(f"- {line}" for line in relevant[:25])
+            if not relevant:
+                body.append("- 脚本没有返回可识别的检测结果")
 
     message = "\n".join(header + body)
     if len(message) > 3800:
         message = message[:3700].rstrip() + "\n\n输出较长，已截断。"
     return message
+
+
+REGION_NAMES = {
+    "0": "仅跨国平台",
+    "1": "跨国 + 台湾平台",
+    "2": "跨国 + 香港平台",
+    "3": "跨国 + 日本平台",
+    "4": "跨国 + 北美平台",
+    "5": "跨国 + 南美平台",
+    "6": "跨国 + 欧洲平台",
+    "7": "跨国 + 大洋洲平台",
+    "8": "跨国 + 韩国平台",
+    "9": "跨国 + 东南亚平台",
+    "10": "AI 平台",
+    "11": "跨国 + 非洲平台",
+    "99": "体育直播平台",
+}
 
 
 async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,16 +265,28 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         f"收到 stream 命令，用户ID: {update.effective_user.id}，"
         f"用户名: {update.effective_user.username}"
     )
+
+    auto_input = str(config.get("stream_check_input", "2")).strip()
+    if context.args:
+        first_arg = str(context.args[0]).strip()
+        if first_arg in REGION_NAMES or first_arg.isdigit():
+            auto_input = first_arg
+
+    region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+
     from utils.remote_ssh import is_remote_ssh_enabled, get_ssh_config
     if is_remote_ssh_enabled():
         cfg = get_ssh_config()
-        await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) 执行流媒体解锁检测，脚本会自动选择 1，请稍等...")
+        await update.message.reply_text(
+            f"正在通过远程家宽 SSH ({cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
+        )
     else:
-        await update.message.reply_text("正在执行流媒体解锁检测，脚本会自动选择 1，请稍等...")
+        await update.message.reply_text(
+            f"正在执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
+        )
 
     try:
         stream_cmd = str(config.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()
-        auto_input = str(config.get("stream_check_input", "1"))
         timeout = int(config.get("stream_check_timeout", 1200))
         return_code, output, elapsed = await asyncio.to_thread(
             run_stream_command,

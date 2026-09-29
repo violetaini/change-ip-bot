@@ -553,5 +553,44 @@ class TestRemoteSSH(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 2)
 
 
+class TestStreamCheckDualStack(unittest.TestCase):
+    def test_split_sections_and_summary_dual_stack(self):
+        from handlers.stream_check import build_stream_summary, split_sections_by_ip_version
+        sample_output = (
+            " ** 正在测试IPv4解锁情况 \n"
+            "--------------------------------\n"
+            " ** 您的网络为: AS4760 HKTIMS-AP (218.103.206.0/24)\n"
+            " Netflix: Yes (Region: HK)\n"
+            " Disney+: Yes (Region: HK)\n"
+            " YouTube Premium: Yes (Region: HK)\n"
+            " ** 正在测试IPv6解锁情况 \n"
+            "--------------------------------\n"
+            " ** 您的网络为: AS4760 HKTIMS-AP (2404:c804::/32)\n"
+            " Netflix: Yes (Region: HK)\n"
+            " Disney+: Yes (Region: HK)\n"
+            " YouTube Premium: Yes (Region: HK)\n"
+            "本次测试已结束\n"
+        )
+        summary = build_stream_summary(0, sample_output, 18.5)
+        self.assertIn("双栈", summary)
+        self.assertIn("【IPv4 解锁结果】", summary)
+        self.assertIn("218.103.206.0/24", summary)
+        self.assertIn("【IPv6 解锁结果】", summary)
+        self.assertIn("2404:c804::/32", summary)
+        self.assertIn("Netflix: Yes (Region: HK)", summary)
+
+    def test_single_stack_v4_summary(self):
+        from handlers.stream_check import build_stream_summary
+        sample_output = (
+            " ** 正在测试IPv4解锁情况 \n"
+            " ** 您的网络为: AS12345 TestISP (1.2.3.4)\n"
+            " Netflix: Yes (Region: US)\n"
+        )
+        summary = build_stream_summary(0, sample_output, 10.0)
+        self.assertIn("单栈 IPv4", summary)
+        self.assertIn("【IPv4 解锁结果】", summary)
+        self.assertNotIn("【IPv6 解锁结果】", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
