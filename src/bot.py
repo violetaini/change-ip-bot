@@ -92,7 +92,7 @@ BOT_COMMANDS = [
     BotCommand("dns_update_off", "关闭DNS更新"),
     BotCommand("quality", "检测IP质量并发送JPG报告"),
     BotCommand("stream", "检测流媒体解锁并发送简报"),
-    BotCommand("ping", "测试网络延迟"),
+    BotCommand("ping", "测试网络延迟(支持IPv4/IPv6)"),
     BotCommand("speedtest", "测试网络速度"),
 ]
 
@@ -214,7 +214,7 @@ class VPSChangeIPBot:
             "/dns_update_off - 关闭DNS更新（超级管理员）\n"
             "/quality - 检测IP质量并发送JPG报告\n"
             "/stream - 检测流媒体解锁并发送简报\n"
-            "/ping - 测试网络延迟\n"
+            "/ping [-4/-6] [目标] [-c 次数] - 测试网络延迟（支持IPv4/IPv6）\n"
             "/speedtest - 测试网络速度"
         )
 

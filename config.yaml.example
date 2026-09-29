@@ -85,6 +85,7 @@ huawei_dns_ttl: 60
 
 # Ping配置
 ping_target: "1.1.1.1"
+ping_target_v6: "2606:4700:4700::1111"
 ping_count: 10
 
 # IP质量检测配置

@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import subprocess
+from typing import Tuple
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -9,6 +10,124 @@ from telegram.ext import ContextTypes
 from config import config
 from handlers.user_check import check_user_permission
 from utils.logger import logger
+
+
+def parse_ping_params(
+    args: list[str],
+    default_v4: str = "1.1.1.1",
+    default_v6: str = "2606:4700:4700::1111",
+    default_count: int = 10,
+) -> Tuple[str, int, int, str]:
+    """
+    解析 ping 命令参数。
+    支持:
+      /ping                  -> 默认 v4 目标, count=10, ip_version=4
+      /ping -6               -> 默认 v6 目标, count=10, ip_version=6
+      /ping -4               -> 默认 v4 目标, count=10, ip_version=4
+      /ping -6 2400:3200::1  -> 目标 2400:3200::1, count=10, ip_version=6
+      /ping 2400:3200::1     -> 自动识别包含 ':' 为 IPv6, ip_version=6
+      /ping -c 5 -6          -> count=5, 默认 v6 目标, ip_version=6
+      /ping -c 5 8.8.8.8     -> count=5, 目标 8.8.8.8, ip_version=4
+
+    返回: (target, count, ip_version, warning_message)
+    """
+    count = default_count
+    warning = ""
+    ip_version = None
+    target = None
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-c":
+            if i + 1 < len(args) and args[i + 1].isdigit():
+                count = int(args[i + 1])
+                i += 2
+            else:
+                warning = "无效的 -c 参数，使用默认值"
+                i += 1
+        elif arg == "-6":
+            ip_version = 6
+            i += 1
+        elif arg == "-4":
+            ip_version = 4
+            i += 1
+        else:
+            target = arg
+            i += 1
+
+    if count < 1:
+        count = 1
+    elif count > 100:
+        count = 100
+        warning = "Ping 次数已限制为最大值 100"
+
+    if target:
+        if ip_version is None:
+            if ":" in target:
+                ip_version = 6
+            else:
+                ip_version = 4
+    else:
+        if ip_version == 6:
+            target = default_v6
+        else:
+            ip_version = 4
+            target = default_v4
+
+    return target, count, ip_version, warning
+
+
+def format_ping_result(target: str, ip_version: int, output: str) -> str:
+    stats_match = re.search(
+        r'(\d+)\s+packets transmitted,\s+(\d+)\s+(?:packets\s+)?received,\s+(\d+)%\s+packet loss',
+        output,
+    )
+    rtt_match = re.search(
+        r'(?:rtt|round-trip)\s+min/avg/max/(?:mdev|stddev)\s*=\s*([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)',
+        output,
+    )
+
+    if stats_match and rtt_match:
+        transmitted, received, loss = stats_match.groups()
+        min_rtt, avg_rtt, max_rtt, mdev = rtt_match.groups()
+        return (
+            f"Ping 结果 ({target} [IPv{ip_version}]):\n\n"
+            f"📊 统计信息:\n"
+            f"• 发送: {transmitted}\n"
+            f"• 接收: {received}\n"
+            f"• 丢包率: {loss}%\n\n"
+            f"⏱️ 延迟:\n"
+            f"• 最小: {min_rtt} ms\n"
+            f"• 平均: {avg_rtt} ms\n"
+            f"• 最大: {max_rtt} ms\n"
+            f"• 抖动: {mdev} ms"
+        )
+
+    win_stats = re.search(
+        r'Packets:\s+Sent\s*=\s*(\d+),\s*Received\s*=\s*(\d+),\s*Lost\s*=\s*(\d+)\s*\(([\d.]+)%\s*loss\)',
+        output,
+    )
+    win_rtt = re.search(
+        r'Minimum\s*=\s*(\d+)ms,\s*Maximum\s*=\s*(\d+)ms,\s*Average\s*=\s*(\d+)ms',
+        output,
+    )
+    if win_stats and win_rtt:
+        sent, rec, lost, loss = win_stats.groups()
+        min_rtt, max_rtt, avg_rtt = win_rtt.groups()
+        return (
+            f"Ping 结果 ({target} [IPv{ip_version}]):\n\n"
+            f"📊 统计信息:\n"
+            f"• 发送: {sent}\n"
+            f"• 接收: {rec}\n"
+            f"• 丢包率: {loss}%\n\n"
+            f"⏱️ 延迟:\n"
+            f"• 最小: {min_rtt} ms\n"
+            f"• 平均: {avg_rtt} ms\n"
+            f"• 最大: {max_rtt} ms"
+        )
+
+    return output.strip() or "Ping 未返回可解析结果"
 
 
 async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20,39 +139,34 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_name = update.effective_user.full_name
     logger.info(f"收到 ping 命令，用户ID: {user_id}，用户名: {user_name}，全名: {full_name}")
 
-    target = config.get('ping_target', '1.1.1.1')
-    count = config.get('ping_count', 10)
+    default_v4 = str(config.get("ping_target", "1.1.1.1")).strip() or "1.1.1.1"
+    default_v6 = str(config.get("ping_target_v6", "2606:4700:4700::1111")).strip() or "2606:4700:4700::1111"
+    default_count = int(config.get("ping_count", 10))
 
-    if context.args:
-        args = context.args
-        i = 0
-        while i < len(args):
-            if args[i] == '-c':
-                if i + 1 < len(args) and args[i + 1].isdigit():
-                    count = int(args[i + 1])
-                    i += 2
-                else:
-                    await update.message.reply_text("无效的 -c 参数，使用默认值")
-                    i += 1
-            else:
-                target = args[i]
-                i += 1
+    args = list(context.args) if context.args else []
+    target, count, ip_version, warning = parse_ping_params(
+        args, default_v4=default_v4, default_v6=default_v6, default_count=default_count
+    )
 
-    if count < 1:
-        count = 1
-    elif count > 100:
-        count = 100
-        await update.message.reply_text("Ping 次数已限制为最大值 100")
+    if warning:
+        await update.message.reply_text(warning)
+
     try:
         from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command, get_ssh_config
         if is_remote_ssh_enabled():
             cfg = get_ssh_config()
-            await update.message.reply_text(f"正在通过远程家宽 SSH ({cfg['host']}) ping {target} ({count} 次)...")
-            ping_cmd_str = f"ping -c {count} {target}"
+            await update.message.reply_text(
+                f"正在通过远程家宽 SSH ({cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
+            )
+            ping_cmd_str = f"ping -{ip_version} -c {count} {target}"
             code, output = await asyncio.to_thread(run_remote_ssh_command, ping_cmd_str, timeout=300)
         else:
-            await update.message.reply_text(f"正在 ping {target} ({count} 次)...")
-            ping_cmd = ['ping', '-n', str(count), target] if os.name == 'nt' else ['ping', '-c', str(count), target]
+            await update.message.reply_text(f"正在 ping {target} (IPv{ip_version}, {count} 次)...")
+            ping_cmd = (
+                ["ping", f"-{ip_version}", "-n", str(count), target]
+                if os.name == "nt"
+                else ["ping", f"-{ip_version}", "-c", str(count), target]
+            )
             result = await asyncio.to_thread(
                 subprocess.run,
                 ping_cmd,
@@ -60,31 +174,12 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=True,
                 timeout=300,
             )
-            output = result.stdout
+            output = f"{result.stdout}\n{result.stderr}"
 
-        stats_match = re.search(r'(\d+) packets transmitted, (\d+) received, (\d+)% packet loss', output)
-        rtt_match = re.search(r'min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', output)
-
-        if stats_match and rtt_match:
-            transmitted, received, loss = stats_match.groups()
-            min_rtt, avg_rtt, max_rtt, mdev = rtt_match.groups()
-            message = (
-                f"Ping 结果 ({target}):\n\n"
-                f"📊 统计信息:\n"
-                f"• 发送: {transmitted}\n"
-                f"• 接收: {received}\n"
-                f"• 丢包率: {loss}%\n\n"
-                f"⏱️ 延迟:\n"
-                f"• 最小: {min_rtt} ms\n"
-                f"• 平均: {avg_rtt} ms\n"
-                f"• 最大: {max_rtt} ms\n"
-                f"• 抖动: {mdev} ms"
-            )
-        else:
-            message = output or "Ping 未返回可解析结果"
-
+        message = format_ping_result(target, ip_version, output)
         await update.message.reply_text(message)
     except subprocess.TimeoutExpired:
         await update.message.reply_text("Ping 超时")
     except Exception as e:
         await update.message.reply_text(f"执行 ping 时出错: {str(e)}")
+

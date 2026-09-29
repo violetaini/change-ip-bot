@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
     "huawei_dns_record_type": "A",
     "huawei_dns_ttl": 60,
     "ping_target": "1.1.1.1",
+    "ping_target_v6": "2606:4700:4700::1111",
     "ping_count": 10,
     "ip_quality_enabled": True,
     "ip_quality_cmd": "bash <(curl -sL https://IP.Check.Place) -y",

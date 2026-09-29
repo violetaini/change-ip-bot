@@ -592,5 +592,66 @@ class TestStreamCheckDualStack(unittest.TestCase):
         self.assertNotIn("【IPv6 解锁结果】", summary)
 
 
+class TestPingDualStack(unittest.TestCase):
+    def test_parse_ping_params_defaults(self):
+        from handlers.ping import parse_ping_params
+        target, count, ip_version, warning = parse_ping_params([])
+        self.assertEqual(target, "1.1.1.1")
+        self.assertEqual(count, 10)
+        self.assertEqual(ip_version, 4)
+        self.assertEqual(warning, "")
+
+    def test_parse_ping_params_v6_flag(self):
+        from handlers.ping import parse_ping_params
+        target, count, ip_version, warning = parse_ping_params(["-6"])
+        self.assertEqual(target, "2606:4700:4700::1111")
+        self.assertEqual(count, 10)
+        self.assertEqual(ip_version, 6)
+
+        target, count, ip_version, warning = parse_ping_params(["-6", "2400:3200::1"])
+        self.assertEqual(target, "2400:3200::1")
+        self.assertEqual(ip_version, 6)
+
+    def test_parse_ping_params_auto_detect_colon(self):
+        from handlers.ping import parse_ping_params
+        target, count, ip_version, warning = parse_ping_params(["2001:4860:4860::8888"])
+        self.assertEqual(target, "2001:4860:4860::8888")
+        self.assertEqual(ip_version, 6)
+
+    def test_parse_ping_params_count_and_custom(self):
+        from handlers.ping import parse_ping_params
+        target, count, ip_version, warning = parse_ping_params(["-c", "5", "-6", "2400:3200::1"])
+        self.assertEqual(target, "2400:3200::1")
+        self.assertEqual(count, 5)
+        self.assertEqual(ip_version, 6)
+
+        # Count clamp
+        target, count, ip_version, warning = parse_ping_params(["-c", "150"])
+        self.assertEqual(count, 100)
+        self.assertIn("最大值 100", warning)
+
+    def test_format_ping_result_linux(self):
+        from handlers.ping import format_ping_result
+        sample_output = (
+            "PING 2606:4700:4700::1111 (2606:4700:4700::1111) 56 data bytes\n"
+            "64 bytes from 2606:4700:4700::1111: icmp_seq=1 ttl=58 time=3.46 ms\n"
+            "--- 2606:4700:4700::1111 ping statistics ---\n"
+            "3 packets transmitted, 3 received, 0% packet loss, time 2003ms\n"
+            "rtt min/avg/max/mdev = 3.459/3.733/4.185/0.321 ms\n"
+        )
+        msg = format_ping_result("2606:4700:4700::1111", 6, sample_output)
+        self.assertIn("Ping 结果 (2606:4700:4700::1111 [IPv6])", msg)
+        self.assertIn("发送: 3", msg)
+        self.assertIn("接收: 3", msg)
+        self.assertIn("丢包率: 0%", msg)
+        self.assertIn("平均: 3.733 ms", msg)
+
+    def test_format_ping_result_fallback_unreachable(self):
+        from handlers.ping import format_ping_result
+        err_output = "ping: connect: Network is unreachable"
+        msg = format_ping_result("2606:4700:4700::1111", 6, err_output)
+        self.assertEqual(msg, "ping: connect: Network is unreachable")
+
+
 if __name__ == "__main__":
     unittest.main()
