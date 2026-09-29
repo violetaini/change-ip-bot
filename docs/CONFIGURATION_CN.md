@@ -65,7 +65,7 @@ ip_change_provider: "boil" # 可选: boil 或 classic
 
 ### A. Boil Network 住宅家宽模式
 
-专为 Boil Network 住宅网络设计的官方直连驱动：
+专为 **Boil Network** 住宅宽带控制台量身定制的官方直连驱动：
 
 ```yaml
 ip_change_provider: "boil"
@@ -73,15 +73,18 @@ boil_api_base_url: "https://ippanel.boil.network"
 boil_api_token: "your_boil_api_token_here"
 ```
 
+* **部署架构推荐**：**强烈推荐部署于第三方独立海外 VPS**。
+  - 换 IP 全程通过公网 REST API 触发，查询 IP 亦走云端接口，**完全解耦**。
+  - 配合 `remote_ssh_enabled: true`，网络诊断、测速、流媒体解锁测试借道家宽执行，即便家宽重启/断网，云端 Bot 依然 24 小时保持在线。
 * **工作流程**：
   1. `/check` 检查 IP：请求 `POST /api/v1/getIP`（**不消耗换 IP 额度**），获取当前绑定的公网住宅 IP。
   2. `/change` 更换 IP：请求 `POST /api/v1/changeIP`。
   3. **客户端冷却守护 (`COOLDOWN_PROTECTION`)**：接口返回的 `next_allowed_at` 时间戳会被本地持久化。若用户在冷却期内误点换 IP，Bot 会在本地直接拦截并提示剩余冷却秒数，**彻底杜绝因提前请求被服务商惩罚扣除额外配额**。
   4. 自动提取服务端返回的 `uses_left`（当日剩余可用次数），直观展示在状态报告中。
 
-### B. 经典自建 HTTP API 模式
+### B. 经典自建 HTTP API 模式 (特别适配 Fachost)
 
-用于对接各类自建 VPS 控制面板或自定义拨号脚本接口：
+特别适配 **Fachost** 等动态 VPS 服务商、自建 VPS 控制面板或各类软路由/光猫拨号脚本接口：
 
 ```yaml
 ip_change_provider: "classic"
@@ -93,8 +96,11 @@ ip_change_verify_delay: 5
 ip_change_retry_verify_count: 3
 ```
 
+* **部署位置要求**：**必须/推荐直接安装在换 IP 机器本机**。
+  - 经典模式换 IP 通常依赖本机/局域网脚本，且换 IP 后靠**本地出口 IP**确认变更。
+  - 此时务必保持 `remote_ssh_enabled: false`（默认值），Bot 纯单机本地闭环运行，无需任何 SSH 凭证。
 * **参数解析**：
-  * `ip_change_api`：换 IP 触发 GET 请求接口。接口应返回 JSON，推荐格式：`{"status": "IP changed", "old_ip": "1.1.1.1", "new_ip": "2.2.2.2"}`。
+  * `ip_change_api`：换 IP 触发 GET 请求接口（如 Fachost 面板 API 或本机重拨接口）。接口应返回 JSON，推荐格式：`{"status": "IP changed", "old_ip": "1.1.1.1", "new_ip": "2.2.2.2"}`。
   * `ip_change_interval`：本地防刷冷却时间（分钟，默认 2 分钟）。
   * `ip_change_verify_public_ip`：换 IP 成功后，是否通过公共 IP 接口轮询校验公网出口确实已发生变更。
 

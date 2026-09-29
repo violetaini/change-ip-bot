@@ -65,7 +65,7 @@ ip_change_provider: "boil" # Options: boil or classic
 
 ### A. Boil Network Residential IP Mode
 
-Official API driver for Boil Network dynamic residential IPs:
+Official API driver specifically engineered for **Boil Network** dynamic residential broadband:
 
 ```yaml
 ip_change_provider: "boil"
@@ -73,15 +73,18 @@ boil_api_base_url: "https://ippanel.boil.network"
 boil_api_token: "your_boil_api_token_here"
 ```
 
+* **Recommended Architecture**: **Highly recommended to deploy on a third-party overseas cloud VPS**.
+  - IP rotation and status querying execute completely via public cloud REST APIs (**fully decoupled**).
+  - Paired with `remote_ssh_enabled: true`, network tests, speedtest, and streaming unlock tests tunnel through the residential host. Even if residential PPPoE drops, the cloud bot stays 24/7 online.
 * **Workflow**:
   1. `/check`: Queries `POST /api/v1/getIP` (**does not consume change quotas**) to retrieve current residential IP.
   2. `/change`: Triggers `POST /api/v1/changeIP`.
   3. **Client-Side Cooldown Guard (`COOLDOWN_PROTECTION`)**: The API-returned `next_allowed_at` timestamp is persisted locally. If an IP change is attempted during cooldown, the bot blocks the request locally, **preventing accidental quota deduction penalties**.
   4. Automatically parses `uses_left` (remaining daily quota) and includes it in status summaries.
 
-### B. Classic Custom HTTP API Mode
+### B. Classic Custom HTTP API Mode (Specially Optimized for Fachost)
 
-Connects to custom VPS control panels or custom dialer endpoints:
+Engineered for **Fachost** dynamic VPS, custom VPS control panels, and soft router/modem redial scripts:
 
 ```yaml
 ip_change_provider: "classic"
@@ -92,6 +95,14 @@ ip_change_verify_public_ip: true
 ip_change_verify_delay: 5
 ip_change_retry_verify_count: 3
 ```
+
+* **Deployment Requirement**: **Must/Recommended to deploy locally on the target node itself**.
+  - Classic rotation relies on local/LAN endpoints, and verification checks the **local host egress IP**.
+  - Keep `remote_ssh_enabled: false` (default) for a 100% standalone local closed loop without SSH keys.
+* **Parameters**:
+  * `ip_change_api`: Endpoint for triggering IP rotation (e.g. Fachost panel API). Expected response JSON: `{"status": "IP changed", "old_ip": "1.1.1.1", "new_ip": "2.2.2.2"}`.
+  * `ip_change_interval`: Local cooldown period in minutes (default: 2 minutes).
+  * `ip_change_verify_public_ip`: Whether to verify external egress IP change via public APIs upon rotation.
 
 ---
 

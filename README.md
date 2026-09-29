@@ -16,9 +16,12 @@
 
 </div>
 
+> 💡 **Special Support**: Out-of-the-box optimized support for **Fachost** (Classic HTTP Change-IP API / Dynamic VPS) and **Boil Network** (Cloud Console API / Residential Broadband), supporting both standalone local deployments and Cloud-to-Edge split architectures.
+
 ---
 
 - 📖 **[Detailed Configuration Guide & Reference (docs/CONFIGURATION.md)](docs/CONFIGURATION.md)**
+- 🔄 **[IP Switching Modes & Deployment Architecture](#-ip-switching-modes--deployment-architecture)**
 - ⚡ **[Quick Start & Installation](#-quick-start)**
 - 🤖 **[Telegram Command Reference](#-command-reference)**
 - 🗑️ **[Uninstallation & Service Cleanup](#️-uninstallation)**
@@ -93,6 +96,33 @@ It solves critical pain points in dynamic IP management: client-side quota & coo
           │  - IP.Check.Place Quality / Stream Unlock / Speedtest     │
           └───────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🔄 IP Switching Modes & Deployment Architecture
+
+The bot supports two distinct operational modes designed for different network topologies:
+
+### 1. Classic Mode (`classic`) —— Specially Optimized for Fachost / Dynamic VPS & Soft Routers
+- **Mechanism**: Calls a local or LAN HTTP endpoint (e.g. Fachost panel change-IP API, router WebHook, or local redial script).
+- **Verification Loop**: After triggering rotation, the bot queries public IP APIs (`ipify`, etc.) from the **host machine itself** to verify external IP change.
+- **Deployment Location**: **Must/Recommended to run locally on the node changing IP**.
+  - *Rationale*: External third-party servers cannot reach internal LAN endpoints directly, and a remote VPS's external IP remains static, causing IP change verification to fail.
+- **SSH Setting**: Keep disabled (`remote_ssh_enabled: false`, default). Everything executes locally with zero SSH configuration needed.
+
+### 2. Boil Network Mode (`boil`) —— Deeply Integrated for Boil Residential Broadband
+- **Mechanism**: Calls **Boil Network's official public Cloud REST API** (`https://ippanel.boil.network`) directly to trigger rotation.
+- **Verification Loop**: Authoritative IP allocation is queried directly from Boil's cloud API, **completely independent of the bot host's local egress IP**.
+- **Deployment Location**: **Natively supports deployment on third-party standalone overseas VPS** (Recommended).
+  - *Architectural Benefit*: Run the bot 24/7 on an ultra-stable cloud VPS (avoiding Telegram downtime when residential PPPoE resets). When running network tests (`/quality`, `/stream`, `/speedtest`), the bot tunnels commands via SSH into the residential node to measure real residential metrics.
+- **SSH Setting**: Enabled (`remote_ssh_enabled: true`) on remote VPS; can also be disabled (`false`) if installed directly on the residential node.
+
+### Deployment Topology Comparison
+
+| Deployment Target | Recommended Provider / Machine | IP Change Mode | SSH State (`remote_ssh_enabled`) | Architectural Highlights |
+| :--- | :--- | :---: | :---: | :--- |
+| **Installed Locally on Target Node** | **Fachost** / Soft Router / Local Host | **Classic (`classic`)** or Boil | **Disabled** (`false`) | 100% local closed loop, zero SSH keys or port mapping required. |
+| **Installed on Independent VPS** | **Boil Network** Residential Host | **Boil (`boil`)** | **Enabled** (`true`) | Cloud-controlled rotation + SSH-tunneled network diagnostics. |
 
 ---
 
