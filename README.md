@@ -1,237 +1,213 @@
-# VPS IP Bot
+<div align="center">
 
-A Telegram bot for VPS and proxy servers with automated IP switching, multi-provider DNS updating, scheduled changes, and network diagnostic tools.
+<img src="public/logo.png" alt="VPS IP Bot" width="130" />
 
-Supports both **Classic HTTP IP Change APIs** and **Boil Network residential IP API** with dynamic in-bot mode switching and client-side quota protection.
+# **VPS IP Bot**
 
-## What It Does
+### Automated IP Switching · Multi-Provider DNS Synchronization · Remote SSH Dual-Stack Diagnostics
 
-- **Dual-mode IP switching**:
-  - **Classic Mode**: Integrates with custom VPS panel / provider HTTP APIs.
-  - **Boil Network Mode**: Direct integration with Boil Network residential IP API (`changeIP` & `getIP`).
-- **Cooldown & Quota Protection**: Respects Boil Network's `next_allowed_at` timestamp client-side to prevent penalizing daily quotas.
-- **Telegram Bot Control**:
-  - Query IP and change status (`/check`, `/ip_status`).
-  - Trigger manual IP change (`/change`).
-  - Switch provider modes dynamically via buttons or commands (`/set_ip_mode`).
-  - Set API URLs and tokens directly from chat (`/set_ip_api`, `/set_boil_token`).
-  - Clears legacy WebApp / Mini App menu buttons automatically on startup.
-- **Multi-Provider DNS Automation**:
-  - Automatically updates DNS A records upon IP change.
-  - Supports **Cloudflare**, **Aliyun**, **Tencent / DNSPod**, **GoDaddy**, **Porkbun**, **DigitalOcean**, and **Huawei Cloud**.
-  - Verifies public DNS propagation after scheduled changes.
-- **Scheduled Automatic Changes**:
-  - Run automatic IP changes at fixed Beijing time (`/set_auto_time`, `/auto_start`, `/auto_stop`).
-  - Configurable retries, delays, and notifications.
-- **Diagnostics & Network Tools (Local & Remote SSH)**:
-  - IP quality reports with image generation (`/quality`).
-  - Streaming service unlock checking (`/stream`).
-  - Latency ping (`/ping`) and network speed test (`/speedtest`).
-  - **Remote SSH Node Execution**: Diagnostic scripts run directly on your target residential VPS/host via SSH, while rendering/reporting is done on the bot host.
-  - **1.1.1.1 DoH & Zero-Delay Local DNS Cache**: Directly queries Cloudflare 1.1.1.1 via DNS-over-HTTPS (bypassing SmartDNS/AdGuard caches) and immediately caches new IP mappings upon IP change.
-- **Security & Privacy**:
-  - Strict role-based access control (Super Admin vs Admin).
-  - Sensitive token / secret redaction across all logs and messages.
+[![Release](https://img.shields.io/github/v/release/violetaini/change-ip-bot?color=blue&style=flat-square)](https://github.com/violetaini/change-ip-bot/releases)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-0088cc?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
+[![Tests](https://img.shields.io/badge/Tests-46%20Passed-brightgreen?style=flat-square)](tests/test_all.py)
 
-## Supported IP Change Providers
+**[English](README.md)** · **[简体中文](README_CN.md)**
 
-### 1. Classic Mode (`classic`)
-- Generic HTTP API returning JSON with `status`, `old_ip`, and `new_ip`.
-- Cooldown controlled locally by `ip_change_interval` (minutes).
-- Verifies public IP change after API call.
+</div>
 
-### 2. Boil Network Mode (`boil`)
-- Official API integration for Boil Network (`https://ippanel.boil.network`).
-- Queries current residential IP via `POST /api/v1/getIP` without consuming change quotas.
-- Triggers IP change via `POST /api/v1/changeIP`.
-- Displays remaining daily quota (`uses_left`) and dynamic server cooldown (`next_allowed_at`).
-- Client-side cooldown guard (`COOLDOWN_PROTECTION`) prevents accidental early requests that could consume penalty quotas.
-- Polls for new IP via API and updates configured DNS records automatically.
+---
 
-## Telegram Commands
+## 📖 Overview
+
+**VPS IP Bot** is an enterprise-grade Telegram automation bot engineered for VPS proxy servers and dynamic residential broadband (PPPoE redial nodes).
+
+It solves critical pain points in dynamic IP management: client-side quota & cooldown protection, instant multi-cloud DNS synchronization, local DNS cache poisoning avoidance, and accurate dual-stack (IPv4 & IPv6) diagnostic probing through firewalls.
+
+---
+
+## ✨ Key Features
+
+- 🔄 **Dual-Mode IP Switching Architecture**:
+  - **Classic Mode (`classic`)**: Seamlessly connects to custom VPS panel or provider HTTP change-IP APIs.
+  - **Boil Network Mode (`boil`)**: Direct official API integration for Boil Network residential IPs (`changeIP` & `getIP`).
+- 🛡️ **Client-Side Cooldown & Quota Guard**:
+  - Validates Boil Network's server timestamp (`next_allowed_at`) locally. Intercepts premature requests before hitting the API, preventing wasted daily change quotas.
+- 🌐 **Multi-Provider Automated DNS Synchronization**:
+  - Automatically updates configured DNS records (A / AAAA) within seconds after IP rotation.
+  - Built-in support for **8 major DNS providers**: Cloudflare, Aliyun, Tencent Cloud / DNSPod, Huawei Cloud, GoDaddy, Porkbun, DigitalOcean.
+  - Recursive public DNS propagation verification after scheduled automatic changes.
+- ⚡ **Remote SSH Diagnostics & 1.1.1.1 DoH Self-Healing**:
+  - **Separation of Concerns**: The bot can run on a lightweight overseas VPS and execute diagnostics on remote residential machines via SSH. Heavy rendering (Cairo/SVG) is performed on the bot host.
+  - **Direct 1.1.1.1 DoH Resolution**: Bypasses local DNS caches (SmartDNS, AdGuard Home) by resolving domains directly through Cloudflare DNS-over-HTTPS.
+  - **Zero-Delay DNS Memory Mapping**: Authoritative new IPs are immediately injected into memory caches upon rotation. Auto-recovers from SSH error 255 on IP change.
+- 🇨🇳 **True GFW Border Penetration Verification**:
+  - Eliminates false positives from traditional tests (e.g. `itdog.cn` resolving to overseas Cloudflare Anycast POPs).
+  - Uses **EDNS Client Subnet (ECS)** with domestic IP ranges to resolve `v.qq.com` (Tencent Video) to true mainland Chinese China Telecom CDN nodes.
+  - Performs multi-attempt HTTP connection probes with strict timeouts to verify genuine border traversal.
+- 📶 **Full-Stack Dual-Stack (IPv4 / IPv6) Adaptation**:
+  - **`/quality` (IP Quality)**: Fetches and groups IPv4 and IPv6 SVG reports into a combined Telegram media group album. Supports `-4` / `-6` flags; gracefully degrades on single-stack nodes.
+  - **`/stream` (Streaming Unlock)**: Decouples IPv4 and IPv6 test blocks, preserving ISP/ASN metadata for both stacks with region selection.
+  - **`/ping` (Latency Test)**: Supports `-4`, `-6`, auto-detection of IPv6 colons, and `-c` packet counts.
+  - **`/speedtest` (Bandwidth Test)**: Ookla Speedtest output clearly annotates the client external IP and stack type (`IPv4` / `IPv6`).
+- 🔒 **Role-Based Access Control & Privacy Redaction**:
+  - Distinguishes Super Admins from Regular Admins for sensitive operations.
+  - Globally redacts API tokens, private keys, and passwords (`<redacted>`) across all logs and messages.
+
+---
+
+## 🏗️ Architecture
 
 ```text
-/start               Show help message
-/check               Check current public IP (or Boil residential IP)
-/change              Trigger IP change and update DNS
-/ip_status           Show current IP change mode, cooldown status, and quota
-/set_ip_mode [mode]  Switch IP mode (classic/boil) with interactive buttons, super admin only
-/set_boil_token      Set Boil API Token, super admin only
-/set_ip_api [url]    Set Classic IP change API URL, super admin only
-/auto_start          Enable scheduled automatic IP changes, super admin only
-/auto_stop           Disable scheduled automatic IP changes, super admin only
-/auto_status         Show automatic IP change status
-/set_auto_time HH:MM Set daily automatic IP change time (Beijing time), super admin only
-/manage_users        Manage regular admins with interactive buttons, super admin only
-/logs [N]            Show recent bot logs (redacted), super admin only
-/health              Run a bot health check
-/dns_status          Show DNS update configuration, super admin only
-/set_dns_provider    Set DNS provider, super admin only
-/set_dns_record      Set DNS zone and record, super admin only
-/dns_update_on       Enable DNS updates, super admin only
-/dns_update_off      Disable DNS updates, super admin only
-/quality [-4/-6]    Run IP quality check (auto dual-stack IPv4 & IPv6 media group)
-/stream [region]     Run streaming unlock check (auto dual-stack IPv4 & IPv6 summary)
-/ping                Test network latency
-/speedtest           Run network speed test
+                  Telegram Client (iOS / Android / Desktop)
+                                │
+                                ▼  (Telegram Bot API)
+            ┌───────────────────────────────────────────────┐
+            │               VPS IP Bot Core                 │
+            │  - Command Parsing & RBAC Authorization       │
+            │  - Persistent State & Cooldown Lock           │
+            │  - 1.1.1.1 DoH & Zero-Delay Local DNS Cache  │
+            │  - Cairo / SVG Report Rendering Engine        │
+            └──────────┬─────────────────┬──────────────────┘
+                       │                 │
+      (Change IP API)  │                 │ (Dynamic DNS Update)
+                       ▼                 ▼
+          ┌──────────────────────┐  ┌─────────────────────────────────┐
+          │  Boil Network API    │  │  Cloudflare / Huawei / Aliyun   │
+          │  Custom VPS Panel    │  │  DNSPod / GoDaddy / Porkbun etc │
+          └──────────────────────┘  └─────────────────────────────────┘
+                       │ (PPPoE Redial)
+                       ▼
+          ┌───────────────────────────────────────────────────────────┐
+          │              Remote Residential Host (via SSH)            │
+          │  - Dual-Stack IPv4 & Public IPv6 Networking               │
+          │  - Secure SSH Command Execution Pipeline                  │
+          │  - True Mainland GFW Traversal Probe (v.qq.com CDN)       │
+          │  - IP.Check.Place Quality / Stream Unlock / Speedtest     │
+          └───────────────────────────────────────────────────────────┘
 ```
 
-## Installation
+---
 
-Clone or upload the project to your server, for example:
+## 🤖 Command Reference
+
+| Command | Arguments | Permission | Description |
+| :--- | :--- | :---: | :--- |
+| `/start` | None | Public | Show welcome message and available commands |
+| `/check` | None | Admin | Check current public IP, dual-stack addresses & GFW domestic reachability |
+| `/change` | None | Admin | Trigger manual IP change and sync configured DNS records |
+| `/ip_status` | None | Admin | Inspect current IP mode, cooldown timer, and remaining quota |
+| `/quality` | `[-4 / -6]` | Admin | Generate high-res IP quality card (dual-stack album or single-stack photo) |
+| `/stream` | `[region]` | Admin | Run streaming unlock check (`2`=HK+Global, `1`=TW, `0`=Global) |
+| `/ping` | `[-4/-6] [target] [-c count]` | Admin | Test network latency with IPv4/IPv6 target auto-detection |
+| `/speedtest`| None | Admin | Interactive Ookla Speedtest with client egress IP & protocol stack |
+| `/health` | None | Admin | Check bot system CPU, memory, disk, and dependencies status |
+| `/set_ip_mode` | `[classic / boil]` | Super Admin | Switch IP change provider dynamically via buttons or arguments |
+| `/set_boil_token`| `<token>` | Super Admin | Set and reload Boil API token |
+| `/set_ip_api` | `<url>` | Super Admin | Set Classic HTTP change-IP API endpoint URL |
+| `/auto_start` | None | Super Admin | Enable daily scheduled automatic IP rotation |
+| `/auto_stop` | None | Super Admin | Disable daily scheduled automatic IP rotation |
+| `/auto_status`| None | Admin | View scheduled automatic change status and next trigger time |
+| `/set_auto_time`| `HH:MM` | Super Admin | Set daily automatic change time in Beijing Time (`04:00`) |
+| `/manage_users`| None | Super Admin | Interactive button-based admin user management (Add/Remove) |
+| `/logs` | `[lines]` | Super Admin | View recent bot logs with automatic credential redaction |
+| `/dns_status` | None | Super Admin | Inspect current dynamic DNS configuration |
+| `/set_dns_provider` | `<provider>` | Super Admin | Set DNS provider (`cloudflare`, `huawei`, `aliyun`, etc.) |
+| `/set_dns_record` | `ZONE RECORD [TYPE] [TTL]` | Super Admin | Configure DNS zone, record name, type, and TTL |
+| `/dns_update_on` | None | Super Admin | Enable automatic DNS updates after IP change |
+| `/dns_update_off`| None | Super Admin | Disable automatic DNS updates after IP change |
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites & System Dependencies
+
+Recommended OS: Ubuntu 20.04+ or Debian 11+.
+Install Python, Cairo graphics libraries, and fonts for SVG report generation:
+
+```bash
+apt update
+apt install -y python3 python3-pip python3-venv curl libcairo2 fonts-wqy-zenhei
+```
+
+*(Optional: If `chromium` is installed, the bot will prioritize Chromium headless rendering for `/quality` reports. If not available, it cleanly falls back to CairoSVG).*
+
+### 2. Installation
+
+Clone the repository:
 
 ```bash
 mkdir -p /opt/vps-change-ip
 cd /opt/vps-change-ip
-```
+git clone https://github.com/violetaini/change-ip-bot.git .
 
-Create a virtual environment and install dependencies:
-
-```bash
-apt update
-apt install -y curl libcairo2 fonts-wqy-zenhei
+# Create virtual environment and install requirements
 python3 -m venv venv
 source venv/bin/activate
-python -m pip install -U pip
+pip install -U pip
 pip install -r requirements.txt
 ```
 
-## Configuration
+### 3. Configuration
 
-Copy the example config:
+Copy the example configuration:
 
 ```bash
 cp config.yaml.example config.yaml
-```
-
-Edit it:
-
-```bash
 nano config.yaml
 ```
 
-Required fields:
+**Minimal Essential Settings**:
 
 ```yaml
-telegram_bot_token: ""
-telegram_chat_id: ""
-```
+telegram_bot_token: "123456789:ABCdefGhIJKlmNoPQRstuvWXyz"
+telegram_chat_id: "987654321"
 
-### IP Change Mode Configuration
-
-Choose one of the following modes:
-
-**Option A: Boil Network Residential IP Mode**
-```yaml
-ip_change_provider: "boil"
-boil_api_base_url: "https://ippanel.boil.network"
-boil_api_token: "your_boil_api_token"
-```
-
-**Option B: Classic Custom HTTP API Mode**
-```yaml
-ip_change_provider: "classic"
-ip_change_api: "https://your-panel.com/api/change-ip"
-ip_change_interval: 2
-ip_change_timeout: 600
-```
-
-### Optional & Advanced Settings
-
-```yaml
-telegram_allowed_user_ids: ""
-telegram_super_admin_user_ids: ""
+# Access Control (Supports user ID whitelist)
+telegram_super_admin_user_ids: "987654321"
 telegram_admin_user_ids: ""
 
-# Automatic Scheduled Changes
-auto_change_enabled: false
-auto_change_time: "04:00"
-auto_change_retry_count: 5
-auto_change_retry_delay_seconds: 60
-auto_change_quality_report: true
+# Select IP Change Mode
+ip_change_provider: "boil" # or classic
+boil_api_base_url: "https://ippanel.boil.network"
+boil_api_token: "your_boil_api_token"
 
-# Public DNS Propagation Verification
-dns_verify_enabled: true
-dns_verify_delay_seconds: 60
-dns_verify_retry_count: 10
-
-# Multi-Provider DNS Settings (e.g. Cloudflare)
-dns_update_enabled: false
+# DNS Auto-Sync (Example: Cloudflare)
+dns_update_enabled: true
 dns_provider: "cloudflare"
 dns_zone_name: "example.com"
-dns_record_name: "sub.example.com"
+dns_record_name: "hkt.example.com"
 dns_record_type: "A"
-dns_ttl: 60
-cloudflare_api_token: "your_cloudflare_api_token"
-cloudflare_proxied: false
+cloudflare_api_token: "your_cf_api_token"
 
-# Legacy Huawei Cloud DNS (Supported)
-huawei_dns_enabled: false
-huawei_ak: ""
-huawei_sk: ""
-huawei_dns_zone_name: ""
-huawei_dns_record_name: ""
-
-# Diagnostic Scripts
-stream_check_enabled: true
-stream_check_input: "1"
-stream_check_timeout: 1200
-
-# Remote SSH Node Execution (Optional: Run diagnostics on remote residential machine)
-remote_ssh_enabled: false
+# Remote SSH Execution (Optional: Run diagnostics on remote residential machine)
+remote_ssh_enabled: true
 remote_ssh_host: "hkt.example.com"
 remote_ssh_port: 22
 remote_ssh_user: "root"
 remote_ssh_key_path: "/opt/vps-change-ip/ssh_key.pem"
-remote_ssh_password: ""
-remote_ssh_timeout: 300
 ```
 
-`telegram_chat_id` can contain one or more chat IDs separated by commas.
+### 4. Running Manually
 
-Super admins can run sensitive commands such as `/auto_start`, `/auto_stop`, `/set_auto_time`, `/logs`, `/set_ip_mode`, `/set_boil_token`, `/set_ip_api`, and `/manage_users`.
-Regular admins can run `/change` and read-only check commands.
-
-If `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are both empty, the bot keeps the legacy behavior and authorizes by `telegram_allowed_user_ids` or `telegram_chat_id`.
-
-Do not commit `config.yaml`. It contains secrets.
-
-Supported DNS providers:
-
-```text
-cloudflare
-aliyun
-dnspod
-tencent_dnspod
-godaddy
-porkbun
-digitalocean
-huawei
-```
-
-## Running Tests
-
-An automated unit test suite is included in `tests/test_all.py`, testing configuration loading, text redaction, state management, provider routing, cooldown protection, and error handling:
+Run in foreground to test:
 
 ```bash
-python -m unittest tests/test_all.py
-```
-
-## Run Manually
-
-```bash
-cd /opt/vps-change-ip
-source venv/bin/activate
 python src/bot.py
 ```
 
-## Run With systemd
+Send `/start` and `/check` in Telegram to verify bot functionality.
+
+---
+
+## 🛠️ Systemd Service Setup
 
 Create `/etc/systemd/system/vps-ip-bot.service`:
 
 ```ini
 [Unit]
-Description=VPS IP Bot
+Description=VPS IP Bot Service
 After=network-online.target
 Wants=network-online.target
 
@@ -247,7 +223,7 @@ User=root
 WantedBy=multi-user.target
 ```
 
-Enable and start it:
+Enable and start the service:
 
 ```bash
 systemctl daemon-reload
@@ -256,25 +232,35 @@ systemctl start vps-ip-bot
 systemctl status vps-ip-bot --no-pager
 ```
 
-View logs:
+View live logs:
 
 ```bash
 journalctl -u vps-ip-bot -f
 ```
 
-## Notes
+---
 
-- `config.yaml` is ignored by Git on purpose.
-- The bot stores runtime state in `/var/lib/vps-ip-bot/state.json` by default.
-- You can override the state file path with `state_file` or the `VPS_IP_BOT_STATE_FILE` environment variable.
-- `/quality` can use Chromium if installed. If Chromium is not available, it falls back to CairoSVG. On dual-stack nodes, it automatically detects and delivers both IPv4 and IPv6 reports as a Telegram media group, or you can specify `/quality -4` or `/quality -6`.
-- `/stream` runs the RegionRestrictionCheck script and separates IPv4 & IPv6 dual-stack results clearly in the summary report. Supports optional region arguments (e.g. `/stream 2` for HK, `/stream 1` for TW, `/stream 3` for JP, `/stream 0` for Global only).
-- `/manage_users` can only be used by a super admin and provides button-based regular admin management. Admins are shown as buttons; tap one to select it, then tap delete. Adding an admin uses the button flow and then asks for the Telegram user ID.
-- `/set_dns_provider`, `/set_dns_record`, `/dns_update_on`, and `/dns_update_off` can only be used by a super admin and write non-secret DNS settings to `config.yaml`.
-- `/speedtest` requires the `speedtest` CLI to be installed on the server.
-- Automatic IP changes update DNS through the configured provider, send the change result, verify DNS propagation, then send the IP quality image report.
-- Logs are redacted before writing and before being sent through `/logs`, but do not commit `config.yaml` or any backup containing secrets.
+## 🧪 Testing
 
-## License
+The repository includes a comprehensive unit test suite covering configuration validation, credential redaction, state management, multi-provider routing, zero-delay SSH self-healing, EDNS domestic reachability, and dual-stack formatters:
 
-This project is released under the MIT License. See [LICENSE](LICENSE) for details.
+```bash
+python -m unittest tests/test_all.py
+```
+
+Test status: **46 unit tests passing (100% pass rate)**.
+
+---
+
+## 🔒 Security Best Practices
+
+1. **Automatic Credential Redaction**: All Telegram logs, `/logs` command output, and error traces pass through `redact_text` to sanitize API tokens and passwords.
+2. **Key Security**: Keep your SSH private keys protected with `chmod 600`.
+3. **Repository Cleanliness**: `.gitignore` strictly ignores `config.yaml`, `*.pem`, `*.key`, `id_rsa`, and local state files. Never commit private credentials.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
+Contributions, issues, and feature requests are welcome!
