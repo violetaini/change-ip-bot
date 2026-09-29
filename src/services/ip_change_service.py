@@ -74,7 +74,7 @@ def _check_interval(server_config: Optional[Dict[str, Any]] = None) -> Optional[
 
 
 def build_result_message(result: ChangeResult) -> str:
-    title = f"【{result.server_name}】" if result.server_name else ""
+    title = f"【{result.server_name}】" if (result.server_name and is_multi_server_mode()) else ""
     if result.success:
         return (
             f"{title}IP更换成功\n"

@@ -1112,6 +1112,26 @@ class TestServerSelection(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(cfg)
         update.message.reply_text.assert_called_once()
 
+    @patch("config.config", {
+        "ip_change_provider": "generic",
+        "ip_change_api": "https://example.com/change",
+    })
+    async def test_resolve_target_server_single_server_no_prompt(self):
+        from handlers.server_selection import resolve_target_server
+
+        update = MagicMock()
+        update.effective_user.id = 12345
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = []
+
+        cfg, is_all, prompt = await resolve_target_server(update, context, "check", allow_all=True)
+        self.assertFalse(prompt)
+        self.assertFalse(is_all)
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg["id"], "default")
+        update.message.reply_text.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

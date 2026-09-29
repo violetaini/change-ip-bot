@@ -205,25 +205,36 @@ class VPSChangeIPBot:
             return
 
         is_multi = is_multi_server_mode()
-        server_help = ""
         if is_multi:
-            server_help = (
+            ops_section = (
+                "【节点管理】\n"
                 "/servers - 查看所有服务器状态看板\n"
                 "/use [节点] - 切换当前默认操作服务器\n"
+                "/check [节点/all] - 检查当前IP与境内连通性\n"
+                "/change [节点/all] - 更换IP并同步DNS\n"
+                "/ip_status [节点/all] - 查看换IP配置与冷却状态\n\n"
+                "【网络诊断】\n"
+                "/quality [节点] [-4/-6] - 检测IP质量并生成JPG报告\n"
+                "/stream [节点] - 检测流媒体解锁并发送简报\n"
+                "/ping [节点] [-4/-6] [目标] [-c 次数] - 测试网络延迟Ping\n"
+                "/speedtest [节点] - Ookla网络速度测速\n\n"
+            )
+        else:
+            ops_section = (
+                "【常用操作】\n"
+                "/check - 检查当前IP与境内连通性\n"
+                "/change - 更换IP并同步DNS\n"
+                "/ip_status - 查看换IP配置与冷却状态\n\n"
+                "【网络诊断】\n"
+                "/quality [-4/-6] - 检测IP质量并生成JPG报告\n"
+                "/stream - 检测流媒体解锁并发送简报\n"
+                "/ping [-4/-6] [目标] [-c 次数] - 测试网络延迟Ping\n"
+                "/speedtest - Ookla网络速度测速\n\n"
             )
 
         await update.message.reply_text(
             "欢迎使用 VPS IP 更换与网络运维工具\n\n"
-            "【节点管理】\n"
-            f"{server_help}"
-            "/check [节点/all] - 检查当前IP与境内连通性\n"
-            "/change [节点/all] - 更换IP并同步DNS\n"
-            "/ip_status [节点/all] - 查看换IP配置与冷却状态\n\n"
-            "【网络诊断】\n"
-            "/quality [节点] [-4/-6] - 检测IP质量并生成JPG报告\n"
-            "/stream [节点] - 检测流媒体解锁并发送简报\n"
-            "/ping [节点] [-4/-6] [目标] [-c 次数] - 测试网络延迟Ping\n"
-            "/speedtest [节点] - Ookla网络速度测速\n\n"
+            f"{ops_section}"
             "【定时与运维】\n"
             "/health - 检查机器人及节点运行状态\n"
             "/auto_status - 查看自动换IP定时状态\n"
@@ -495,8 +506,12 @@ class VPSChangeIPBot:
 
     async def post_init(self, application: Application):
         try:
-            await application.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeDefault())
-            await application.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
+            active_commands = [
+                cmd for cmd in BOT_COMMANDS
+                if is_multi_server_mode() or cmd.command not in ("servers", "use")
+            ]
+            await application.bot.set_my_commands(active_commands, scope=BotCommandScopeDefault())
+            await application.bot.set_my_commands(active_commands, scope=BotCommandScopeAllPrivateChats())
             await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
             target_chat_ids = set()
@@ -516,7 +531,7 @@ class VPSChangeIPBot:
 
             for cid in target_chat_ids:
                 try:
-                    await application.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeChat(chat_id=cid))
+                    await application.bot.set_my_commands(active_commands, scope=BotCommandScopeChat(chat_id=cid))
                     await application.bot.set_chat_menu_button(chat_id=cid, menu_button=MenuButtonCommands())
                 except Exception as ex:
                     logger.debug(f"设置单独聊天菜单失败 (chat_id={cid}): {ex}")

@@ -164,15 +164,16 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
         if is_remote_ssh_enabled(server_cfg):
             ssh_cfg = get_ssh_config(server_config=server_cfg)
             await msg.reply_text(
-                f"正在通过【{sname}】远程家宽 SSH ({ssh_cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
+                f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
             )
             ping_cmd_str = f"ping -{ip_version} -c {count} {target}"
             code, output = await asyncio.to_thread(run_remote_ssh_command, ping_cmd_str, timeout=300, server_config=server_cfg)
         else:
-            await msg.reply_text(f"正在【{sname}】ping {target} (IPv{ip_version}, {count} 次)...")
+            await msg.reply_text(f"正在{prefix}ping {target} (IPv{ip_version}, {count} 次)...")
             ping_cmd = (
                 ["ping", f"-{ip_version}", "-n", str(count), target]
                 if os.name == "nt"

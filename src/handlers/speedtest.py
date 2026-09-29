@@ -34,9 +34,10 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
 
+    prefix = f"【{sname}】" if is_multi_server_mode() else ""
     if is_remote_ssh_enabled(server_cfg):
         cfg = get_ssh_config(server_config=server_cfg)
-        status_msg = await msg.reply_text(f"正在通过【{sname}】远程 SSH ({cfg['host']}) 获取测速节点列表...")
+        status_msg = await msg.reply_text(f"正在通过{prefix}远程 SSH ({cfg['host']}) 获取测速节点列表...")
         cmd_str = "speedtest -L --accept-license --accept-gdpr --format=json"
         try:
             code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=30, server_config=server_cfg)
@@ -54,12 +55,14 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             keyboard.insert(0, [InlineKeyboardButton("自动选择最佳节点", callback_data="speedtest_auto")])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await status_msg.edit_text(f"【{sname}】请选择测速节点:", reply_markup=reply_markup)
+            title = f"【{sname}】请选择测速节点:" if is_multi_server_mode() else "请选择测速节点:"
+            await status_msg.edit_text(title, reply_markup=reply_markup)
         except Exception as e:
-            await status_msg.edit_text(f"【{sname}】获取测速节点失败: {str(e)}")
+            err_title = f"【{sname}】获取测速节点失败: {str(e)}" if is_multi_server_mode() else f"获取测速节点失败: {str(e)}"
+            await status_msg.edit_text(err_title)
         return
 
-    status_msg = await msg.reply_text(f"正在获取【{sname}】测速节点列表...")
+    status_msg = await msg.reply_text(f"正在获取{prefix}测速节点列表...")
     try:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -83,9 +86,11 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         keyboard.insert(0, [InlineKeyboardButton("自动选择最佳节点", callback_data="speedtest_auto")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await status_msg.edit_text(f"【{sname}】请选择测速节点:", reply_markup=reply_markup)
+        title = f"【{sname}】请选择测速节点:" if is_multi_server_mode() else "请选择测速节点:"
+        await status_msg.edit_text(title, reply_markup=reply_markup)
     except Exception as e:
-        await status_msg.edit_text(f"【{sname}】获取测速节点失败: {str(e)}")
+        err_title = f"【{sname}】获取测速节点失败: {str(e)}" if is_multi_server_mode() else f"获取测速节点失败: {str(e)}"
+        await status_msg.edit_text(err_title)
 
 
 def format_speedtest_result(data: dict, server_name: str = "") -> str:
@@ -151,18 +156,19 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
 
     try:
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
         if is_remote_ssh_enabled(server_cfg):
             cfg = get_ssh_config(server_config=server_cfg)
-            await query.edit_message_text(f"正在通过【{sname}】远程 SSH ({cfg['host']}) 进行测速...\n这可能需要 1~2 分钟...")
+            await query.edit_message_text(f"正在通过{prefix}远程 SSH ({cfg['host']}) 进行测速...\n这可能需要 1~2 分钟...")
             cmd_str = f"speedtest {'-s ' + ookla_server_id if ookla_server_id != 'auto' else ''} --accept-license --accept-gdpr --format=json"
             code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=600, server_config=server_cfg)
             try:
                 data = json.loads(output)
             except json.JSONDecodeError:
-                await query.edit_message_text(f"【{sname}】测速结果解析失败。原始输出：\n{output[:3000]}")
+                await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{output[:3000]}")
                 return
         else:
-            await query.edit_message_text(f"正在进行【{sname}】测速...\n这可能需要几分钟时间...")
+            await query.edit_message_text(f"正在进行{prefix}测速...\n这可能需要几分钟时间...")
             result = await asyncio.to_thread(
                 subprocess.run,
                 cmd,
@@ -173,7 +179,7 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 data = json.loads(result.stdout)
             except json.JSONDecodeError:
-                await query.edit_message_text(f"【{sname}】测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
+                await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
                 return
 
         message = format_speedtest_result(data, server_name=sname if is_multi_server_mode() else "")

@@ -69,10 +69,17 @@ async def change_ip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         sid = server_cfg.get("id", "default")
         sname = server_cfg.get("name", sid)
-        await msg.reply_text(
-            f"已收到服务器 [{sname}] 换IP请求，马上开始执行。\n"
-            "网络可能会短暂中断；如果结果当时发不出去，机器人恢复后会自动补发。"
-        )
+        if is_multi_server_mode():
+            ack_text = (
+                f"已收到服务器 [{sname}] 换IP请求，马上开始执行。\n"
+                "网络可能会短暂中断；如果结果当时发不出去，机器人恢复后会自动补发。"
+            )
+        else:
+            ack_text = (
+                "已收到换IP请求，马上开始执行。\n"
+                "网络可能会短暂中断；如果结果当时发不出去，机器人恢复后会自动补发。"
+            )
+        await msg.reply_text(ack_text)
         res = await do_change_single_server(server_cfg, chat_id=chat_id_str)
         try:
             mark_sending_notify(True, server_id=sid)

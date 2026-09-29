@@ -289,15 +289,16 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
 
+    prefix = f"【{sname}】" if is_multi_server_mode() else ""
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled
     if is_remote_ssh_enabled(server_cfg):
         ssh_cfg = get_ssh_config(server_config=server_cfg)
         await msg.reply_text(
-            f"正在通过【{sname}】远程家宽 SSH ({ssh_cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
+            f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
         )
     else:
         await msg.reply_text(
-            f"正在【{sname}】执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
+            f"正在{prefix}执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
         )
 
     try:
@@ -311,10 +312,9 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             server_cfg,
         )
         logger.info(f"【{sname}】流媒体检测命令返回码: {return_code}，输出长度: {len(output or '')}")
-        prefix = f"【{sname}】" if is_multi_server_mode() else ""
         await msg.reply_text(prefix + build_stream_summary(return_code, output, elapsed))
     except subprocess.TimeoutExpired:
-        await msg.reply_text(f"【{sname}】流媒体检测超时，请稍后再试。")
+        await msg.reply_text(f"{prefix}流媒体检测超时，请稍后再试。")
     except Exception as e:
         logger.exception(f"【{sname}】流媒体检测失败: {e}")
-        await msg.reply_text(f"【{sname}】流媒体检测失败：{redact_text(str(e))}")
+        await msg.reply_text(f"{prefix}流媒体检测失败：{redact_text(str(e))}")

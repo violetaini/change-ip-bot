@@ -229,11 +229,12 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     target_desc = "双栈 (IPv4 & IPv6)" if not explicit_flag else ("IPv6" if explicit_flag == "-6" else "IPv4")
 
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled
+    prefix = f"【{sname}】" if is_multi_server_mode() else ""
     if is_remote_ssh_enabled(server_cfg):
         ssh_cfg = get_ssh_config(server_config=server_cfg)
-        await msg.reply_text(f"正在通过【{sname}】远程家宽 SSH ({ssh_cfg['host']}) 检测 IP 质量 [{target_desc}]，双栈耗时可能需 1~3 分钟，完成后将发送报告预览...")
+        await msg.reply_text(f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) 检测 IP 质量 [{target_desc}]，双栈耗时可能需 1~3 分钟，完成后将发送报告预览...")
     else:
-        await msg.reply_text(f"正在检测【{sname}】IP 质量 [{target_desc}]，完成后将发送图片预览...")
+        await msg.reply_text(f"正在检测{prefix}IP 质量 [{target_desc}]，完成后将发送图片预览...")
 
     loop = asyncio.get_running_loop()
     tmp_dir = None
@@ -326,10 +327,10 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"{prefix}【{item['label']}】图片渲染失败（{redact_text(item['error'])}），已自动降级为报告链接：\n🔗 {item['url']}"
             )
     except subprocess.TimeoutExpired:
-        await msg.reply_text(f"【{sname}】IP 质量检测超时，请稍后再试。")
+        await msg.reply_text(f"{prefix}IP 质量检测超时，请稍后再试。")
     except Exception as e:
         logger.exception(f"【{sname}】IP 质量检测失败: {e}")
-        await msg.reply_text(f"【{sname}】IP 质量检测失败：{redact_text(str(e))}")
+        await msg.reply_text(f"{prefix}IP 质量检测失败：{redact_text(str(e))}")
     finally:
         if tmp_dir and os.path.isdir(tmp_dir):
             try:

@@ -43,8 +43,9 @@ async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) ->
                 if raw_host and boil_ip:
                     set_cached_host_ip(raw_host, boil_ip)
 
+                title = f"【{sname} (Boil住宅)】" if is_multi_server_mode() else "【Boil 模式当前住宅IP】"
                 lines = [
-                    f"【{sname} (Boil住宅)】",
+                    title,
                     f"- IPv4 地址: {boil_ip}",
                 ]
                 v4_target, v6_target = await asyncio.to_thread(resolve_mainland_target)
@@ -144,8 +145,9 @@ async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) ->
             v6_ip = await asyncio.to_thread(_get_local_v6_classic)
 
         mode_desc = "Fachost 专用模式" if provider in ("fachost", "classic") else "Generic 通用模式"
+        title = f"【{sname} ({mode_desc})】" if is_multi_server_mode() else "【当前IP状态】"
         lines = [
-            f"【{sname} ({mode_desc})】",
+            title,
             f"- IPv4 地址: {current_v4}",
             f"  • 境内连通性 (v.qq.com 电信): {desc4}",
         ]
