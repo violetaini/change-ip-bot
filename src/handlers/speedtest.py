@@ -73,6 +73,46 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"获取测速节点失败: {str(e)}")
 
 
+def format_speedtest_result(data: dict) -> str:
+    """
+    格式化 Ookla Speedtest JSON 结果，展示节点、客户端出口IP及栈类型（IPv4/IPv6）、上下行速率、延迟与链接。
+    """
+    server = data.get("server", {}) or {}
+    server_name = server.get("name", "未知节点")
+    server_loc = server.get("location", "")
+    server_country = server.get("country", "")
+    if server_loc and server_country:
+        server_info = f"{server_name} ({server_loc}, {server_country})"
+    elif server_loc or server_country:
+        server_info = f"{server_name} ({server_loc or server_country})"
+    else:
+        server_info = server_name
+
+    download_bw = data.get("download", {}).get("bandwidth", 0) or 0
+    upload_bw = data.get("upload", {}).get("bandwidth", 0) or 0
+    download_mbps = download_bw / 125000
+    upload_mbps = upload_bw / 125000
+
+    latency = data.get("ping", {}).get("latency", 0.0) or 0.0
+    result_url = data.get("result", {}).get("url", "N/A") or "N/A"
+
+    external_ip = str(data.get("interface", {}).get("externalIp", "") or "").strip()
+    ip_line = ""
+    if external_ip:
+        stack_type = "IPv6" if ":" in external_ip else "IPv4"
+        ip_line = f"🌐 客户端出口: {external_ip} ({stack_type})\n"
+
+    return (
+        "测速结果:\n"
+        f"测速节点: {server_info}\n"
+        f"{ip_line}"
+        f"⬇️ 下载速度: {download_mbps:.2f} Mbps\n"
+        f"⬆️ 上传速度: {upload_mbps:.2f} Mbps\n"
+        f"延迟: {latency:.2f} ms\n"
+        f"结果链接: {result_url}"
+    )
+
+
 async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_permission(update):
         return
@@ -115,17 +155,11 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await query.edit_message_text(f"测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
                 return
 
-        message = (
-            "测速结果:\n"
-            f"测速节点: {data['server']['name']} ({data['server']['location']}, {data['server']['country']})\n"
-            f"⬇️ 下载速度: {data['download']['bandwidth'] / 125000:.2f} Mbps\n"
-            f"⬆️ 上传速度: {data['upload']['bandwidth'] / 125000:.2f} Mbps\n"
-            f"延迟: {data['ping']['latency']:.2f} ms\n"
-            f"结果链接: {data.get('result', {}).get('url', 'N/A')}"
-        )
+        message = format_speedtest_result(data)
         await query.edit_message_text(message)
     except subprocess.TimeoutExpired:
         await query.edit_message_text("测速超时，请稍后重试")
     except Exception as e:
         logger.error(f"测速失败: {str(e)}")
         await query.edit_message_text(f"测速失败: {str(e)}")
+

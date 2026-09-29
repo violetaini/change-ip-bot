@@ -653,5 +653,47 @@ class TestPingDualStack(unittest.TestCase):
         self.assertEqual(msg, "ping: connect: Network is unreachable")
 
 
+class TestSpeedtestFormatting(unittest.TestCase):
+    def test_format_speedtest_result_ipv6(self):
+        from handlers.speedtest import format_speedtest_result
+        data = {
+            "server": {"name": "Misaka", "location": "Hong Kong", "country": "Hong Kong"},
+            "download": {"bandwidth": 50000000},
+            "upload": {"bandwidth": 25000000},
+            "ping": {"latency": 4.5},
+            "result": {"url": "https://speedtest.net/result/123"},
+            "interface": {"externalIp": "2001:db8::1"},
+        }
+        res = format_speedtest_result(data)
+        self.assertIn("客户端出口: 2001:db8::1 (IPv6)", res)
+        self.assertIn("400.00 Mbps", res)
+        self.assertIn("200.00 Mbps", res)
+        self.assertIn("4.50 ms", res)
+        self.assertIn("https://speedtest.net/result/123", res)
+
+    def test_format_speedtest_result_ipv4(self):
+        from handlers.speedtest import format_speedtest_result
+        data = {
+            "server": {"name": "STC", "location": "Hong Kong", "country": "Hong Kong"},
+            "download": {"bandwidth": 12500000},
+            "upload": {"bandwidth": 12500000},
+            "ping": {"latency": 2.1},
+            "result": {"url": "https://speedtest.net/result/456"},
+            "interface": {"externalIp": "198.51.100.1"},
+        }
+        res = format_speedtest_result(data)
+        self.assertIn("客户端出口: 198.51.100.1 (IPv4)", res)
+        self.assertIn("100.00 Mbps", res)
+        self.assertIn("100.00 Mbps", res)
+
+    def test_format_speedtest_result_missing_interface(self):
+        from handlers.speedtest import format_speedtest_result
+        data = {}
+        res = format_speedtest_result(data)
+        self.assertIn("测速结果:", res)
+        self.assertNotIn("客户端出口:", res)
+        self.assertIn("0.00 Mbps", res)
+
+
 if __name__ == "__main__":
     unittest.main()
