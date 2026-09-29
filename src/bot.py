@@ -53,6 +53,7 @@ from services.dns_update_service import (
     is_dns_update_enabled,
 )
 from utils.logger import logger
+from utils.system_deps import ensure_system_dependencies, get_system_dependency_status
 from utils.state import (
     get_last_change_time,
     get_pending_notification,
@@ -358,15 +359,23 @@ class VPSChangeIPBot:
             tmp_dir = tempfile.mkdtemp(prefix="auto_ip_quality_")
             png_path = str(Path(tmp_dir) / "ip_quality_report.png")
             jpg_path = str(Path(tmp_dir) / "ip_quality_report.jpg")
-            await asyncio.to_thread(render_svg_url_to_png, svg_url, png_path)
-            await asyncio.to_thread(crop_report_area, png_path, jpg_path)
+            try:
+                await asyncio.to_thread(render_svg_url_to_png, svg_url, png_path)
+                await asyncio.to_thread(crop_report_area, png_path, jpg_path)
 
-            for chat_id in chat_ids:
-                with open(jpg_path, "rb") as f:
-                    await context.bot.send_photo(
+                for chat_id in chat_ids:
+                    with open(jpg_path, "rb") as f:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=f,
+                            caption="自动换IP后的IP质量检测报告",
+                        )
+            except Exception as render_err:
+                logger.warning(f"自动IP质量图片渲染失败，降级发送链接: {render_err}")
+                for chat_id in chat_ids:
+                    await context.bot.send_message(
                         chat_id=chat_id,
-                        photo=f,
-                        caption="自动换IP后的IP质量检测报告",
+                        text=f"自动换IP成功，IP质量检测完成。\n⚠️ 图片渲染失败，可直接点击查看报告：\n{svg_url}",
                     )
         except Exception as e:
             logger.exception(f"自动IP质量检测失败: {e}")
@@ -407,6 +416,12 @@ class VPSChangeIPBot:
             logger.info("已注册 Telegram 机器人命令菜单与 MenuButton（含全局、私聊及管理员作用域）")
         except Exception as e:
             logger.warning(f"注册 Telegram 命令菜单失败: {e}")
+
+        # 后台异步启动系统依赖自检与自愈，不阻塞机器人初始化响应
+        try:
+            asyncio.create_task(asyncio.to_thread(ensure_system_dependencies))
+        except Exception as ex:
+            logger.debug(f"启动系统依赖自检任务异常: {ex}")
 
     def get_auto_change_jobs(self):
         if not self.app or not self.app.job_queue:
@@ -1139,13 +1154,14 @@ class VPSChangeIPBot:
         state_parent = state_file.parent
         checks.append(f"状态文件目录: {'可写' if os.access(state_parent, os.W_OK) else '不可写'} ({state_parent})")
 
-        quality_tool = "Chromium" if any(shutil.which(name) for name in (
-            "chromium",
-            "chromium-browser",
-            "google-chrome",
-            "google-chrome-stable",
-        )) else "CairoSVG"
-        checks.append(f"IP质量图片渲染: {quality_tool}")
+        dep_status = get_system_dependency_status()
+        cairo_info = dep_status["cairo"]["detail"]
+        cairo_icon = "✅" if dep_status["cairo"]["ok"] else "⚠️"
+        checks.append(f"IP质量图片渲染: {cairo_icon} {cairo_info}")
+
+        font_info = dep_status["font"]["detail"]
+        font_icon = "✅" if dep_status["font"]["ok"] else "⚠️"
+        checks.append(f"中文字体环境: {font_icon} {font_info}")
 
         stream_tools = []
         for name in ("bash", "curl"):

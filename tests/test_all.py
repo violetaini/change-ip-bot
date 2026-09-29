@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -263,6 +264,77 @@ class TestBotHelpers(unittest.TestCase):
             if os.path.exists(tmp_yaml.name):
                 os.remove(tmp_yaml.name)
 
+
+class TestSystemDeps(unittest.TestCase):
+    def test_get_system_dependency_status(self):
+        from utils.system_deps import get_system_dependency_status
+        status = get_system_dependency_status()
+        self.assertIn("cairo", status)
+        self.assertIn("font", status)
+        self.assertIn("curl", status)
+        self.assertIn("speedtest", status)
+        self.assertIn("is_root", status)
+
+    @patch("utils.system_deps.platform.system")
+    def test_ensure_system_dependencies_non_linux(self, mock_platform):
+        mock_platform.return_value = "Windows"
+        import utils.system_deps as sd
+        sd._AUTO_INSTALL_ATTEMPTED = False
+        res = sd.ensure_system_dependencies()
+        self.assertEqual(res.get("status"), "skipped")
+        self.assertEqual(res.get("reason"), "non-linux")
+
+    @patch("utils.system_deps.platform.system")
+    @patch("utils.system_deps.is_root_user")
+    @patch("utils.system_deps.get_system_dependency_status")
+    def test_ensure_system_dependencies_not_root(self, mock_status, mock_root, mock_platform):
+        mock_platform.return_value = "Linux"
+        mock_root.return_value = False
+        mock_status.return_value = {
+            "cairo": {"ok": False, "detail": "missing"},
+            "font": {"ok": False, "detail": "missing"},
+            "curl": {"ok": False, "detail": "missing"},
+        }
+        import utils.system_deps as sd
+        sd._AUTO_INSTALL_ATTEMPTED = False
+        res = sd.ensure_system_dependencies()
+        self.assertEqual(res.get("status"), "skipped")
+        self.assertEqual(res.get("reason"), "not_root")
+
+
+class TestQualityDegradation(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.ip_quality.check_user_permission")
+    @patch("handlers.ip_quality.run_quality_command")
+    @patch("handlers.ip_quality.render_svg_url_to_png")
+    async def test_ip_quality_render_fail_graceful_degradation(self, mock_render, mock_cmd, mock_perm):
+        mock_perm.return_value = True
+        mock_cmd.return_value = (0, "Check passed: https://ip.check.place/report.svg")
+        mock_render.side_effect = RuntimeError("libcairo.so.2 not found")
+
+        from handlers.ip_quality import ip_quality_handler
+
+        update = MagicMock()
+        update.effective_user.id = 123456
+        update.effective_user.username = "test"
+        update.effective_user.full_name = "Test User"
+        update.message.reply_text = MagicMock()
+        # Async mock for reply_text
+        fut = asyncio.Future()
+        fut.set_result(None)
+        update.message.reply_text.return_value = fut
+
+        context = MagicMock()
+
+        await ip_quality_handler(update, context)
+
+        # Ensure reply_text was called with the fallback link
+        found_link = False
+        for call in update.message.reply_text.call_args_list:
+            arg = str(call[0][0]) if call[0] else ""
+            if "https://ip.check.place/report.svg" in arg and "自动降级为报告链接" in arg:
+                found_link = True
+                break
+        self.assertTrue(found_link, "Fallback message should contain SVG link and downgrade notice")
 
 
 if __name__ == "__main__":

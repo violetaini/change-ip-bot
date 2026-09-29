@@ -181,13 +181,27 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         png_path = str(Path(tmp_dir) / "ip_quality_report.png")
         jpg_path = str(Path(tmp_dir) / "ip_quality_report.jpg")
 
-        await loop.run_in_executor(None, render_svg_url_to_png, svg_url, png_path)
-        await loop.run_in_executor(None, crop_report_area, png_path, jpg_path)
+        try:
+            await loop.run_in_executor(None, render_svg_url_to_png, svg_url, png_path)
+            await loop.run_in_executor(None, crop_report_area, png_path, jpg_path)
 
-        with open(jpg_path, "rb") as f:
-            await update.message.reply_photo(
-                photo=f,
-                caption="IP 质量检测完成，图片预览已附上。",
+            with open(jpg_path, "rb") as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption="IP 质量检测完成，图片预览已附上。",
+                )
+        except Exception as render_err:
+            logger.warning(f"IP质量图片渲染失败，降级发送原始链接: {render_err}")
+            try:
+                from utils.system_deps import ensure_system_dependencies
+                loop.run_in_executor(None, ensure_system_dependencies)
+            except Exception:
+                pass
+
+            await update.message.reply_text(
+                "IP 质量检测完成。\n"
+                f"⚠️ 图片渲染失败（{redact_text(str(render_err))}），已自动降级为报告链接。\n"
+                f"🔗 点击查看详细报告：\n{svg_url}"
             )
     except subprocess.TimeoutExpired:
         await update.message.reply_text("IP 质量检测超时，请稍后再试。")
