@@ -510,10 +510,14 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         # Test selection highlighting
         bot._user_management_selected_admin_id = "11111"
         kb_sel = bot.user_management_keyboard()
-        if not isinstance(InlineKeyboardButton, MagicMock):
+        if isinstance(InlineKeyboardButton, MagicMock):
+            btn_args = [str(call[0][0]) for call in InlineKeyboardButton.call_args_list if call[0]]
+            self.assertTrue(any("✅ 👑 11111" in a for a in btn_args))
+            self.assertTrue(any("删除选中 (11111)" in a for a in btn_args))
+        else:
             buttons_flat_sel = [b.text for row in kb_sel.inline_keyboard for b in row]
-            self.assertTrue(any("✅ 11111" in b for b in buttons_flat_sel))
-            self.assertTrue(any("删除选中: 11111" in b for b in buttons_flat_sel))
+            self.assertTrue(any("✅ 👑 11111" in b for b in buttons_flat_sel))
+            self.assertTrue(any("删除选中 (11111)" in b for b in buttons_flat_sel))
 
     @patch("bot.persist_config_value")
     async def test_user_management_delete_super_admin_blocked_when_only_one(self, mock_persist):
