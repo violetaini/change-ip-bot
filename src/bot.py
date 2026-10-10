@@ -320,7 +320,7 @@ class VPSChangeIPBot:
 
         role = get_user_role(update)
         reply_markup = build_main_menu_keyboard(role)
-        text = "\u2800"
+        text = "👇 请选择功能："
 
         query = update.callback_query
         if query and query.message:
