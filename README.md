@@ -176,7 +176,7 @@ VPS IP Bot natively supports managing multiple distinct VPS, cloud, and resident
 
 | Command | Arguments | Permission | Description |
 | :--- | :--- | :---: | :--- |
-| `/start` | None | Public | Show welcome message and available commands |
+| `/start` / `/help` | None | Public | Show welcome message and role-specific available commands |
 | `/servers` | None | Admin | **View dashboard of all managed servers**, with default switch & batch action buttons |
 | `/use` | `[server_id]` | Admin | **Switch default operating server** for your session (shows buttons if omitted) |
 | `/check` | `[server_id/all]` | Admin | Check public IP, dual-stack addresses & GFW domestic reachability (single or all) |

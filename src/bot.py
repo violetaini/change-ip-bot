@@ -83,6 +83,7 @@ INVISIBLE_MESSAGE_TEXT = "\u2063"
 
 BOT_COMMANDS = [
     BotCommand("start", "显示帮助和可用命令"),
+    BotCommand("help", "显示帮助和可用命令"),
     BotCommand("admins", "查询管理员列表与当前权限角色"),
     BotCommand("servers", "查看所有服务器状态看板"),
     BotCommand("use", "切换当前默认操作服务器"),
@@ -266,30 +267,45 @@ class VPSChangeIPBot:
                 "/speedtest - Ookla网络速度测速\n\n"
             )
 
+        sections = [
+            f"欢迎使用 VPS IP 更换与网络运维工具\n当前用户: `{current_uid}` [{role_label}]",
+            ops_section.strip(),
+        ]
+
+        admin_ops = [
+            "【权限与运维】",
+            "/admins - 查询管理员列表与当前权限角色",
+            "/health - 检查机器人及节点运行状态",
+            "/auto_status - 查看自动换IP定时状态",
+        ]
+        if role == "super_admin":
+            admin_ops.extend([
+                "/auto_start - 启用自动换IP（超级管理员）",
+                "/auto_stop - 关闭自动换IP（超级管理员）",
+                "/set_auto_time HH:MM - 设置自动换IP时间（超级管理员）",
+            ])
+        sections.append("\n".join(admin_ops))
+
+        if role == "super_admin":
+            super_ops = [
+                "【系统与DNS配置（超级管理员）】",
+                "/dns_status - 查看DNS更新配置",
+                "/set_dns_provider PROVIDER - 设置DNS服务商",
+                "/set_dns_record ZONE RECORD [TYPE] [TTL] - 设置DNS解析记录",
+                "/dns_update_on / /dns_update_off - 启闭DNS更新",
+                "/set_ip_mode - 切换换IP模式(通用/Fachost/Boil)",
+                "/set_boil_token TOKEN - 设置Boil API Token",
+                "/set_ip_api URL - 设置换IP接口URL",
+                "/manage_users - 管理管理员权限用户(超管专用)",
+                "/add_super_admin USER_ID - 添加超级管理员(超管专用)",
+                "/add_admin USER_ID - 添加普通管理员(超管专用)",
+                "/remove_admin [USER_ID] - 删除管理员(超管专用)",
+                "/logs - 查看最近运行日志",
+            ]
+            sections.append("\n".join(super_ops))
+
         await update.message.reply_text(
-            f"欢迎使用 VPS IP 更换与网络运维工具\n"
-            f"当前用户: `{current_uid}` [{role_label}]\n\n"
-            f"{ops_section}"
-            "【权限与运维】\n"
-            "/admins - 查询管理员列表与当前权限角色\n"
-            "/health - 检查机器人及节点运行状态\n"
-            "/auto_status - 查看自动换IP定时状态\n"
-            "/auto_start - 启用自动换IP（超级管理员）\n"
-            "/auto_stop - 关闭自动换IP（超级管理员）\n"
-            "/set_auto_time HH:MM - 设置自动换IP时间（超级管理员）\n\n"
-            "【系统与DNS配置（超级管理员）】\n"
-            "/dns_status - 查看DNS更新配置\n"
-            "/set_dns_provider PROVIDER - 设置DNS服务商\n"
-            "/set_dns_record ZONE RECORD [TYPE] [TTL] - 设置DNS解析记录\n"
-            "/dns_update_on / /dns_update_off - 启闭DNS更新\n"
-            "/set_ip_mode - 切换换IP模式(通用/Fachost/Boil)\n"
-            "/set_boil_token TOKEN - 设置Boil API Token\n"
-            "/set_ip_api URL - 设置换IP接口URL\n"
-            "/manage_users - 管理管理员权限用户(超管专用)\n"
-            "/add_super_admin USER_ID - 添加超级管理员(超管专用)\n"
-            "/add_admin USER_ID - 添加普通管理员(超管专用)\n"
-            "/remove_admin [USER_ID] - 删除管理员(超管专用)\n"
-            "/logs - 查看最近运行日志",
+            "\n\n".join(sections),
             parse_mode="Markdown",
         )
 
@@ -2012,6 +2028,7 @@ class VPSChangeIPBot:
         self.app = ApplicationBuilder().token(config["telegram_bot_token"]).post_init(self.post_init).build()
 
         self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("help", self.start))
         self.app.add_handler(CommandHandler("admins", self.admins_handler))
         self.app.add_handler(CommandHandler("servers", self.servers_handler))
         self.app.add_handler(CommandHandler("nodes", self.servers_handler))
