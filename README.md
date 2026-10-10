@@ -187,6 +187,7 @@ VPS IP Bot natively supports managing multiple distinct VPS, cloud, and resident
 | `/ping` | `[server_id] [-4/-6] [target] [-c count]` | Admin | Test network latency with IPv4/IPv6 target auto-detection |
 | `/speedtest`| `[server_id]` | Admin | Interactive Ookla Speedtest with client egress IP & protocol stack |
 | `/health` | None | Admin | Check bot system CPU, memory, disk, and all managed nodes connectivity status |
+| `/admins` | None | Admin | Query admin list, assigned roles (👑 Super Admin / 👤 Admin), and current user role |
 | `/set_ip_mode` | `[generic/fachost/boil]` | Super Admin | Switch IP change provider dynamically via buttons or arguments |
 | `/set_boil_token`| `<token>` | Super Admin | Set and reload Boil API token |
 | `/set_ip_api` | `<url>` | Super Admin | Set change-IP API endpoint URL |
@@ -194,7 +195,10 @@ VPS IP Bot natively supports managing multiple distinct VPS, cloud, and resident
 | `/auto_stop` | None | Super Admin | Disable daily scheduled automatic IP rotation |
 | `/auto_status`| None | Admin | View scheduled automatic change status and per-node schedules |
 | `/set_auto_time`| `HH:MM` | Super Admin | Set daily automatic change time in Beijing Time (`04:00`) |
-| `/manage_users`| None | Super Admin | Interactive button-based admin user management (Add/Remove) |
+| `/manage_users`| None | Super Admin | Interactive button-based admin management panel (Add/Select/Delete Super or Normal Admin; at least 1 Super Admin retained) |
+| `/add_admin` | `<user_id>` | Super Admin | Add a normal administrator by Telegram user ID |
+| `/add_super_admin` | `<user_id>` | Super Admin | Add or promote a user to Super Administrator |
+| `/remove_admin` | `[user_id]` | Super Admin | Remove an administrator (super admins must have at least 1 remaining) |
 | `/logs` | `[lines]` | Super Admin | View recent bot logs with automatic credential redaction |
 | `/dns_status` | None | Super Admin | Inspect current dynamic DNS configuration |
 | `/set_dns_provider` | `<provider>` | Super Admin | Set DNS provider (`cloudflare`, `huawei`, `aliyun`, etc.) |
