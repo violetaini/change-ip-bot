@@ -361,6 +361,31 @@ class TestBotHelpers(unittest.TestCase):
         config["telegram_admin_user_ids"] = " 123456 , 789012 "
         self.assertEqual(_get_admin_id_list(), ["123456", "789012"])
 
+        # Test that super admin ID is filtered out from normal admin list to prevent role overlap
+        config["telegram_super_admin_user_ids"] = "123456"
+        config["telegram_admin_user_ids"] = "123456, 789012, 789012"
+        self.assertEqual(_get_super_admin_id_list(), ["123456"])
+        self.assertEqual(_get_admin_id_list(), ["789012"])
+
+    def test_role_permissions_and_anti_privilege_escalation(self):
+        from config import config
+        from handlers.user_check import get_user_role
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222, 11111"
+
+        mock_update_super = MagicMock()
+        mock_update_super.effective_user.id = 11111
+        self.assertEqual(get_user_role(mock_update_super), "super_admin")
+
+        mock_update_admin = MagicMock()
+        mock_update_admin.effective_user.id = 22222
+        self.assertEqual(get_user_role(mock_update_admin), "admin")
+
+        mock_update_other = MagicMock()
+        mock_update_other.effective_user.id = 99999
+        self.assertEqual(get_user_role(mock_update_other), "")
+
     def test_persist_config_value(self):
         from bot import persist_config_value
         from config import config
@@ -389,6 +414,98 @@ class TestBotHelpers(unittest.TestCase):
         finally:
             if os.path.exists(tmp_yaml.name):
                 os.remove(tmp_yaml.name)
+
+
+class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from config import config
+        self._orig_config = config.copy()
+
+    def tearDown(self):
+        from config import config
+        config.clear()
+        config.update(self._orig_config)
+
+    async def test_permission_enforcement(self):
+        from config import config
+        from handlers.user_check import check_super_admin_permission, check_user_permission
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        # Super admin passes super admin check and user check
+        mock_super = MagicMock()
+        mock_super.callback_query = None
+        mock_super.effective_user.id = 11111
+        self.assertTrue(await check_super_admin_permission(mock_super))
+        self.assertTrue(await check_user_permission(mock_super))
+
+        # Normal admin fails super admin check, passes user check
+        mock_admin = MagicMock()
+        mock_admin.callback_query = None
+        mock_admin.effective_user.id = 22222
+        mock_admin.message.reply_text = AsyncMock()
+        self.assertFalse(await check_super_admin_permission(mock_admin))
+        mock_admin.message.reply_text.assert_called_once()
+        self.assertIn("权限不足", mock_admin.message.reply_text.call_args[0][0])
+        self.assertTrue(await check_user_permission(mock_admin))
+
+        # Unauthorized fails both
+        mock_other = MagicMock()
+        mock_other.callback_query = None
+        mock_other.effective_user.id = 33333
+        mock_other.message.reply_text = AsyncMock()
+        self.assertFalse(await check_user_permission(mock_other))
+        self.assertIn("未授权的用户", mock_other.message.reply_text.call_args[0][0])
+
+    async def test_admins_handler_output(self):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+
+        await bot.admins_handler(mock_update, MagicMock())
+        mock_update.message.reply_text.assert_called_once()
+        sent_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("超级管理员列表", sent_text)
+        self.assertIn("11111", sent_text)
+        self.assertIn("普通管理员列表", sent_text)
+        self.assertIn("22222", sent_text)
+        self.assertIn("👑 超级管理员", sent_text)
+
+    def test_user_management_text_and_keyboard(self):
+        from bot import VPSChangeIPBot
+        from config import config
+        from telegram import InlineKeyboardButton
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+
+        text = bot.user_management_text(mock_update)
+        self.assertIn("超级管理员", text)
+        self.assertIn("11111", text)
+        self.assertIn("普通管理员", text)
+        self.assertIn("22222", text)
+
+        kb = bot.user_management_keyboard()
+        if isinstance(InlineKeyboardButton, MagicMock):
+            btn_args = [str(call[0][0]) for call in InlineKeyboardButton.call_args_list if call[0]]
+            self.assertTrue(any("22222" in a for a in btn_args))
+            self.assertFalse(any("11111" in a for a in btn_args))
+        else:
+            buttons_flat = [b.text for row in kb.inline_keyboard for b in row]
+            self.assertTrue(any("22222" in b for b in buttons_flat))
+            self.assertFalse(any("11111" in b for b in buttons_flat))
 
 
 class TestSystemDeps(unittest.TestCase):

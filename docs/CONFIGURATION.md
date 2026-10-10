@@ -52,9 +52,11 @@ telegram_admin_user_ids: "11223344,55667788"
 | `telegram_admin_user_ids` | string | No | `""` | **Regular Admin User ID(s)**. Allowed to execute `/change`, `/check`, and read-only diagnostic commands. |
 
 > [!TIP]
-> **Permission Levels**:
-> - If both `telegram_super_admin_user_ids` and `telegram_admin_user_ids` are empty, legacy authorization by `telegram_chat_id` or `telegram_allowed_user_ids` applies.
-> - Super Admins can manage regular admins in real time using the `/manage_users` interactive button interface.
+> **Permission Levels & Privilege Isolation**:
+> - **Super Admins (`telegram_super_admin_user_ids`)**: Full control over network settings, auto-switch schedules, DNS configuration, system logs audit, and user management (`/manage_users`, `/add_admin`, `/remove_admin`). Super Admins are statically protected by configuration and cannot be deleted or added as regular admins through the UI.
+> - **Regular Admins (`telegram_admin_user_ids`)**: Permitted to run operational tasks (`/check`, `/change`, `/speedtest`, `/ping`, `/quality`, `/stream`, `/health`, `/servers`, `/use`). Any attempt to access configuration or user management is strictly intercepted with permission denial alerts.
+> - **`/admins` Command**: Both Super and Regular Admins can query the active admin hierarchy, view protected Super Admins, list dynamic Regular Admins, and verify their current authenticated role.
+> - If both lists are empty, legacy authorization by `telegram_chat_id` or `telegram_allowed_user_ids` applies.
 
 ---
 
