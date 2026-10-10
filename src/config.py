@@ -63,6 +63,8 @@ DEFAULT_CONFIG = {
     "stream_check_cmd": "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)",
     "stream_check_input": "2",
     "stream_check_timeout": 1200,
+    "stream_check_auto_detect": True,
+    "stream_check_api": "https://api.ip.sb/geoip?callback=getgeoip",
     "remote_ssh_enabled": False,
     "remote_ssh_host": "",
     "remote_ssh_port": 22,

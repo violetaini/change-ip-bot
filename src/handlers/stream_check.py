@@ -1,11 +1,12 @@
 import asyncio
+import json
 import re
 import shutil
 import subprocess
 import time
-
 from typing import Any, Dict, Optional
 
+import requests
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -17,6 +18,7 @@ from utils.redact import redact_text
 
 
 DEFAULT_STREAM_CMD = "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
+DEFAULT_STREAM_API = "https://api.ip.sb/geoip?callback=getgeoip"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 SEPARATOR_RE = re.compile(r"^[=\-_*#\s|+]+$")
@@ -255,6 +257,134 @@ REGION_NAMES = {
     "99": "体育直播平台",
 }
 
+COUNTRY_TO_REGION_INPUT = {
+    # 1: 跨国 + 台湾平台
+    "TW": "1",
+    # 2: 跨国 + 香港平台
+    "HK": "2",
+    "MO": "2",
+    # 3: 跨国 + 日本平台
+    "JP": "3",
+    # 4: 跨国 + 北美平台
+    "US": "4",
+    "CA": "4",
+    # 5: 跨国 + 南美平台
+    "BR": "5",
+    "AR": "5",
+    "CL": "5",
+    "CO": "5",
+    "PE": "5",
+    "MX": "5",
+    "UY": "5",
+    "VE": "5",
+    "EC": "5",
+    "BO": "5",
+    "PY": "5",
+    # 6: 跨国 + 欧洲平台
+    "GB": "6",
+    "UK": "6",
+    "DE": "6",
+    "FR": "6",
+    "NL": "6",
+    "IT": "6",
+    "ES": "6",
+    "RU": "6",
+    "UA": "6",
+    "PL": "6",
+    "CH": "6",
+    "SE": "6",
+    "NO": "6",
+    "FI": "6",
+    "DK": "6",
+    "IE": "6",
+    "BE": "6",
+    "AT": "6",
+    "PT": "6",
+    "CZ": "6",
+    "GR": "6",
+    "RO": "6",
+    "HU": "6",
+    "TR": "6",
+    "IS": "6",
+    "LU": "6",
+    "EE": "6",
+    "LV": "6",
+    "LT": "6",
+    "SK": "6",
+    "BG": "6",
+    "HR": "6",
+    "SI": "6",
+    "CY": "6",
+    "MT": "6",
+    # 7: 跨国 + 大洋洲平台
+    "AU": "7",
+    "NZ": "7",
+    # 8: 跨国 + 韩国平台
+    "KR": "8",
+    # 9: 跨国 + 东南亚平台
+    "SG": "9",
+    "MY": "9",
+    "TH": "9",
+    "VN": "9",
+    "ID": "9",
+    "PH": "9",
+    "KH": "9",
+    "MM": "9",
+    "LA": "9",
+    "BN": "9",
+    # 11: 跨国 + 非洲平台
+    "ZA": "11",
+    "EG": "11",
+    "NG": "11",
+    "KE": "11",
+    "MA": "11",
+    "GH": "11",
+    "TN": "11",
+    "DZ": "11",
+    "UG": "11",
+}
+
+
+def parse_country_code_from_response(raw_text: str) -> Optional[str]:
+    """Parse country_code from JSON or JSONP response (such as IP.SB geoip API)."""
+    if not raw_text:
+        return None
+    match = re.search(r"\{.*\}", str(raw_text), re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            code = data.get("country_code")
+            if code and isinstance(code, str):
+                return code.strip().upper()
+        except Exception:
+            pass
+    return None
+
+
+def detect_ip_country_code(server_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Detect exit IP country code via IP.SB API (remotely via SSH if configured, else locally)."""
+    from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
+
+    cfg = server_config if server_config is not None else config
+    url = str(cfg.get("stream_check_api") or DEFAULT_STREAM_API).strip()
+    try:
+        if is_remote_ssh_enabled(server_config):
+            cmd = f'curl -s -m 5 "{url}"'
+            code, out = run_remote_ssh_command(cmd, timeout=10, server_config=server_config)
+            if code == 0 and out:
+                return parse_country_code_from_response(out)
+        else:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=5,
+            )
+            if resp.ok:
+                return parse_country_code_from_response(resp.text)
+    except Exception as e:
+        logger.warning(f"自动检测出口 IP 归属地失败 ({url}): {e}")
+    return None
+
 
 async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_permission(update):
@@ -281,13 +411,34 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     sid = cfg.get("id", "default")
     sname = cfg.get("name", sid)
 
-    auto_input = str(cfg.get("stream_check_input", "2")).strip()
-    if context.args:
-        first_arg = str(context.args[0]).strip()
+    user_args = context.args or []
+    detected_country = None
+    if user_args:
+        first_arg = str(user_args[0]).strip()
         if first_arg in REGION_NAMES or (first_arg.isdigit() and len(first_arg) <= 2):
             auto_input = first_arg
-
-    region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+        else:
+            auto_input = str(cfg.get("stream_check_input", "2")).strip()
+        region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+    else:
+        auto_detect = bool(cfg.get("stream_check_auto_detect", True))
+        if auto_detect:
+            detected_country = await asyncio.to_thread(detect_ip_country_code, server_cfg)
+            if detected_country and detected_country in COUNTRY_TO_REGION_INPUT:
+                auto_input = COUNTRY_TO_REGION_INPUT[detected_country]
+                base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                region_desc = f"{base_name} (自动识别: {detected_country})"
+                logger.info(f"【{sname}】通过 IP.SB 自动识别出口 IP 国家: {detected_country} -> 流媒体选项: {auto_input}")
+            else:
+                auto_input = str(cfg.get("stream_check_input", "2")).strip()
+                base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                reason = f"自动识别: {detected_country} 未匹配，使用默认" if detected_country else "识别超时/失败，使用默认"
+                region_desc = f"{base_name} ({reason})"
+                logger.info(f"【{sname}】国家代码未匹配或识别失败 ({detected_country})，回退到默认选项: {auto_input}")
+        else:
+            auto_input = str(cfg.get("stream_check_input", "2")).strip()
+            base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+            region_desc = f"{base_name} (默认)"
 
     prefix = f"【{sname}】" if is_multi_server_mode() else ""
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled

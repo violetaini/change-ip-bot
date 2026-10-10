@@ -1274,6 +1274,96 @@ class TestStreamCheckDualStack(unittest.TestCase):
         self.assertIn("【IPv4 解锁结果】", summary)
         self.assertNotIn("【IPv6 解锁结果】", summary)
 
+    def test_parse_country_code_from_response(self):
+        from handlers.stream_check import parse_country_code_from_response
+        jsonp_sample = 'getgeoip({"region":"Kwai Tsing District","country":"Hong Kong","country_code":"HK","ip":"2403:18c0:5:301::1"});\n'
+        self.assertEqual(parse_country_code_from_response(jsonp_sample), "HK")
+
+        pure_json = '{"country_code": "jp", "country": "Japan"}'
+        self.assertEqual(parse_country_code_from_response(pure_json), "JP")
+
+        self.assertIsNone(parse_country_code_from_response(""))
+        self.assertIsNone(parse_country_code_from_response("<html>502 Bad Gateway</html>"))
+        self.assertIsNone(parse_country_code_from_response('{"error": "rate limited"}'))
+
+    def test_country_to_region_input_mapping(self):
+        from handlers.stream_check import COUNTRY_TO_REGION_INPUT
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("TW"), "1")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("HK"), "2")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("MO"), "2")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("JP"), "3")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("US"), "4")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("CA"), "4")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("BR"), "5")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("GB"), "6")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("DE"), "6")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("AU"), "7")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("KR"), "8")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("SG"), "9")
+        self.assertEqual(COUNTRY_TO_REGION_INPUT.get("ZA"), "11")
+
+    def test_detect_ip_country_code_local(self):
+        from handlers.stream_check import detect_ip_country_code
+        with patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.text = 'getgeoip({"country_code":"US"});'
+            mock_get.return_value = mock_resp
+
+            code = detect_ip_country_code(server_config={"remote_ssh_enabled": False})
+            self.assertEqual(code, "US")
+
+    def test_detect_ip_country_code_remote_ssh(self):
+        from handlers.stream_check import detect_ip_country_code
+        with patch("utils.remote_ssh.is_remote_ssh_enabled", return_value=True), \
+             patch("utils.remote_ssh.run_remote_ssh_command", return_value=(0, 'getgeoip({"country_code":"HK"});\n')):
+            code = detect_ip_country_code(server_config={"remote_ssh_enabled": True})
+            self.assertEqual(code, "HK")
+
+    def test_stream_check_handler_auto_detect_flow(self):
+        from handlers.stream_check import stream_check_handler
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = []  # No args -> trigger auto detect
+
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv1", "name": "香港节点", "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.detect_ip_country_code", return_value="JP"), \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes (Region: JP)", 12.0)) as mock_run:
+
+            asyncio.run(stream_check_handler(update, context))
+
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "3")
+            self.assertTrue(any("自动识别: JP" in call.args[0] for call in msg.reply_text.call_args_list))
+
+    def test_stream_check_handler_manual_arg_overrides(self):
+        from handlers.stream_check import stream_check_handler
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = ["1"]  # User manually passed 1 (Taiwan)
+
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv1", "name": "香港节点", "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.detect_ip_country_code") as mock_detect, \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes (Region: TW)", 10.0)) as mock_run:
+
+            asyncio.run(stream_check_handler(update, context))
+
+            mock_detect.assert_not_called()
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "1")
+
 
 class TestPingDualStack(unittest.TestCase):
     def test_parse_ping_params_defaults(self):
