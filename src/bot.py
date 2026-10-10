@@ -301,8 +301,9 @@ def build_main_menu_keyboard(role: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 查看日志", callback_data="main_menu:logs"),
         ])
 
-    # Row 6: 刷新主面板
+    # Row 6: 辅助控制与帮助
     keyboard.append([
+        InlineKeyboardButton("📖 文本手册 (/help)", callback_data="main_menu:help"),
         InlineKeyboardButton("🔄 刷新主控制台", callback_data="main_menu:refresh"),
     ])
 
@@ -314,6 +315,45 @@ class VPSChangeIPBot:
         self.app = None
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        user = update.effective_user
+        current_uid = str(user.id) if user else ""
+        role = get_user_role(update)
+        role_label = "👑 超级管理员" if role == "super_admin" else ("👤 普通管理员" if role == "admin" else "未授权用户")
+
+        text = (
+            "🤖 *【VPS IP 运维交互式控制台】*\n\n"
+            f"👤 当前用户: `{current_uid}`\n"
+            f"🏷️ 权限角色: *{role_label}*\n\n"
+            "👇 请点击下方功能按钮执行交互操作：\n"
+            "💡 发送 `/help` 可查看完整的命令行文本指令手册。"
+        )
+
+        reply_markup = build_main_menu_keyboard(role)
+        query = update.callback_query
+        if query and query.message:
+            try:
+                await query.edit_message_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup,
+                )
+                return
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    return
+
+        msg = get_effective_msg(update)
+        if msg:
+            await msg.reply_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
             return
 
@@ -353,7 +393,7 @@ class VPSChangeIPBot:
             )
 
         sections = [
-            f"欢迎使用 VPS IP 更换与网络运维工具\n当前用户: `{current_uid}` [{role_label}]",
+            f"📖 *【VPS IP 运维命令手册】*\n当前用户: `{current_uid}` [{role_label}]",
             ops_section.strip(),
         ]
 
@@ -390,26 +430,11 @@ class VPSChangeIPBot:
             ]
             sections.append("\n".join(super_ops))
 
-        reply_markup = build_main_menu_keyboard(role)
-        query = update.callback_query
-        if query and query.message:
-            try:
-                await query.edit_message_text(
-                    "\n\n".join(sections),
-                    parse_mode="Markdown",
-                    reply_markup=reply_markup,
-                )
-                return
-            except Exception as e:
-                if "Message is not modified" in str(e):
-                    return
-
         msg = get_effective_msg(update)
         if msg:
             await msg.reply_text(
                 "\n\n".join(sections),
                 parse_mode="Markdown",
-                reply_markup=reply_markup,
             )
 
     async def main_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -427,6 +452,8 @@ class VPSChangeIPBot:
 
         if action == "refresh":
             await self.start(update, context)
+        elif action == "help":
+            await self.help(update, context)
         elif action == "check":
             await check_ip_status(update, context)
         elif action == "change":
@@ -2513,7 +2540,7 @@ class VPSChangeIPBot:
             pass
 
         self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CommandHandler("help", self.start))
+        self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("admins", self.admins_handler))
         self.app.add_handler(CommandHandler("servers", self.servers_handler))
         self.app.add_handler(CommandHandler("nodes", self.servers_handler))

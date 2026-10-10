@@ -556,7 +556,7 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("22222", sent_text)
         self.assertIn("👑 超级管理员", sent_text)
 
-    async def test_start_command_role_based_pruning(self):
+    async def test_help_command_role_based_pruning(self):
         from bot import VPSChangeIPBot
         from config import config
 
@@ -565,12 +565,12 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
 
         bot = VPSChangeIPBot()
 
-        # Super admin sees full command list including management
+        # Super admin sees full command text list including management
         mock_super = MagicMock()
         mock_super.callback_query = None
         mock_super.effective_user.id = 11111
         mock_super.message.reply_text = AsyncMock()
-        await bot.start(mock_super, MagicMock())
+        await bot.help(mock_super, MagicMock())
         mock_super.message.reply_text.assert_called_once()
         super_text = mock_super.message.reply_text.call_args[0][0]
         self.assertIn("👑 超级管理员", super_text)
@@ -579,12 +579,12 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/dns_status", super_text)
         self.assertIn("【系统与DNS配置（超级管理员）】", super_text)
 
-        # Normal admin sees pruned command list without super admin commands
+        # Normal admin sees pruned command text list without super admin commands
         mock_admin = MagicMock()
         mock_admin.callback_query = None
         mock_admin.effective_user.id = 22222
         mock_admin.message.reply_text = AsyncMock()
-        await bot.start(mock_admin, MagicMock())
+        await bot.help(mock_admin, MagicMock())
         mock_admin.message.reply_text.assert_called_once()
         admin_text = mock_admin.message.reply_text.call_args[0][0]
         self.assertIn("👤 普通管理员", admin_text)
@@ -595,6 +595,29 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/dns_status", admin_text)
         self.assertNotIn("【系统与DNS配置（超级管理员）】", admin_text)
         self.assertNotIn("/auto_start", admin_text)
+
+    async def test_start_command_only_buttons_no_text_wall(self):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        bot = VPSChangeIPBot()
+
+        mock_update = MagicMock()
+        mock_update.callback_query = None
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+
+        await bot.start(mock_update, MagicMock())
+        mock_update.message.reply_text.assert_called_once()
+        sent_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("【VPS IP 运维交互式控制台】", sent_text)
+        # Verify /start does NOT contain the wall of command descriptions
+        self.assertNotIn("/manage_users -", sent_text)
+        self.assertNotIn("/add_super_admin [USER_ID", sent_text)
+        # Verify it has reply_markup
+        kwargs = mock_update.message.reply_text.call_args[1]
+        self.assertIn("reply_markup", kwargs)
 
     def test_user_management_text_and_keyboard(self):
         from bot import VPSChangeIPBot
@@ -2632,6 +2655,7 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("main_menu:dns_status", callbacks)
         self.assertIn("main_menu:manage_users", callbacks)
         self.assertIn("main_menu:logs", callbacks)
+        self.assertIn("main_menu:help", callbacks)
         self.assertIn("main_menu:refresh", callbacks)
 
     def test_build_main_menu_keyboard_admin(self):
@@ -2640,6 +2664,7 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
         callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
         self.assertIn("main_menu:check", callbacks)
         self.assertIn("main_menu:stream", callbacks)
+        self.assertIn("main_menu:help", callbacks)
         self.assertIn("main_menu:refresh", callbacks)
         self.assertNotIn("main_menu:set_ip_mode", callbacks)
         self.assertNotIn("main_menu:dns_status", callbacks)
@@ -2681,6 +2706,7 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
     async def test_main_menu_callback_dispatch(self, mock_stream, mock_change, mock_check):
         from bot import VPSChangeIPBot
         bot = VPSChangeIPBot()
+        bot.help = AsyncMock()
         bot.ip_status = AsyncMock()
         bot.admins_handler = AsyncMock()
         bot.auto_status = AsyncMock()
@@ -2707,6 +2733,10 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
         mock_update.callback_query.data = "main_menu:health"
         await bot.main_menu_callback(mock_update, mock_context)
         bot.health.assert_called_once()
+
+        mock_update.callback_query.data = "main_menu:help"
+        await bot.main_menu_callback(mock_update, mock_context)
+        bot.help.assert_called_once()
 
 
 if __name__ == "__main__":
