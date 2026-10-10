@@ -318,26 +318,15 @@ class VPSChangeIPBot:
         if not await check_user_permission(update):
             return
 
-        user = update.effective_user
-        current_uid = str(user.id) if user else ""
         role = get_user_role(update)
-        role_label = "👑 超级管理员" if role == "super_admin" else ("👤 普通管理员" if role == "admin" else "未授权用户")
-
-        text = (
-            "🤖 *【VPS IP 运维交互式控制台】*\n\n"
-            f"👤 当前用户: `{current_uid}`\n"
-            f"🏷️ 权限角色: *{role_label}*\n\n"
-            "👇 请点击下方功能按钮执行交互操作：\n"
-            "💡 发送 `/help` 可查看完整的命令行文本指令手册。"
-        )
-
         reply_markup = build_main_menu_keyboard(role)
+        text = "\u2800"
+
         query = update.callback_query
         if query and query.message:
             try:
                 await query.edit_message_text(
                     text,
-                    parse_mode="Markdown",
                     reply_markup=reply_markup,
                 )
                 return
@@ -349,7 +338,6 @@ class VPSChangeIPBot:
         if msg:
             await msg.reply_text(
                 text,
-                parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
 

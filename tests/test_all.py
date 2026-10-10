@@ -607,11 +607,11 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         mock_update.callback_query = None
         mock_update.effective_user.id = 11111
         mock_update.message.reply_text = AsyncMock()
-
         await bot.start(mock_update, MagicMock())
         mock_update.message.reply_text.assert_called_once()
         sent_text = mock_update.message.reply_text.call_args[0][0]
-        self.assertIn("【VPS IP 运维交互式控制台】", sent_text)
+        self.assertEqual(sent_text, "\u2800")
+        self.assertNotIn("【VPS IP 运维交互式控制台】", sent_text)
         # Verify /start does NOT contain the wall of command descriptions
         self.assertNotIn("/manage_users -", sent_text)
         self.assertNotIn("/add_super_admin [USER_ID", sent_text)
