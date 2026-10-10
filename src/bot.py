@@ -57,7 +57,12 @@ from handlers.ip_quality import (
 from handlers.ping import ping_handler
 from handlers.server_selection import resolve_target_server
 from handlers.speedtest import speedtest_callback, speedtest_handler
-from handlers.stream_check import stream_check_handler
+from handlers.stream_check import (
+    set_stream_region_callback,
+    set_stream_region_handler,
+    stream_check_handler,
+    stream_select_callback,
+)
 from handlers.user_check import check_super_admin_permission, check_user_permission, get_user_role
 from services.ip_change_service import (
     build_result_message,
@@ -121,6 +126,7 @@ BOT_COMMANDS = [
     BotCommand("dns_update_off", "关闭DNS更新"),
     BotCommand("quality", "检测IP质量并发送JPG报告"),
     BotCommand("stream", "检测流媒体解锁并发送简报"),
+    BotCommand("set_stream_region", "设置流媒体检测固定区域或恢复自动探测"),
     BotCommand("ping", "测试网络延迟(支持IPv4/IPv6)"),
     BotCommand("speedtest", "测试网络速度"),
 ]
@@ -275,7 +281,8 @@ class VPSChangeIPBot:
                 "/ip_status [节点/all] - 查看换IP配置与冷却状态\n\n"
                 "【网络诊断】\n"
                 "/quality [节点] [-4/-6] - 检测IP质量并生成JPG报告\n"
-                "/stream [节点] - 检测流媒体解锁并发送简报\n"
+                "/stream [节点] [区域] - 检测流媒体解锁并发送简报\n"
+                "/set_stream_region [区域/auto] - 设定流媒体固定区域或恢复自动探测\n"
                 "/ping [节点] [-4/-6] [目标] [-c 次数] - 测试网络延迟Ping\n"
                 "/speedtest [节点] - Ookla网络速度测速\n\n"
             )
@@ -287,7 +294,8 @@ class VPSChangeIPBot:
                 "/ip_status - 查看换IP配置与冷却状态\n\n"
                 "【网络诊断】\n"
                 "/quality [-4/-6] - 检测IP质量并生成JPG报告\n"
-                "/stream - 检测流媒体解锁并发送简报\n"
+                "/stream [区域] - 检测流媒体解锁并发送简报\n"
+                "/set_stream_region [区域/auto] - 设定流媒体固定区域或恢复自动探测\n"
                 "/ping [-4/-6] [目标] [-c 次数] - 测试网络延迟Ping\n"
                 "/speedtest - Ookla网络速度测速\n\n"
             )
@@ -2357,6 +2365,8 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("dns_update_off", self.dns_update_off))
         self.app.add_handler(CommandHandler("quality", ip_quality_handler))
         self.app.add_handler(CommandHandler("stream", stream_check_handler))
+        self.app.add_handler(CommandHandler("set_stream_region", set_stream_region_handler))
+        self.app.add_handler(CommandHandler("setstream", set_stream_region_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
         self.app.add_handler(CallbackQueryHandler(self.server_action_callback, pattern="^srv_act:"))
@@ -2364,6 +2374,8 @@ class VPSChangeIPBot:
         self.app.add_handler(CallbackQueryHandler(self.manage_users_callback, pattern="^manage_users:"))
         self.app.add_handler(CallbackQueryHandler(self.remove_admin_callback, pattern="^remove_admin:"))
         self.app.add_handler(CallbackQueryHandler(self.refresh_admins_callback, pattern="^refresh_admins_info$"))
+        self.app.add_handler(CallbackQueryHandler(set_stream_region_callback, pattern="^set_stream_reg:"))
+        self.app.add_handler(CallbackQueryHandler(stream_select_callback, pattern="^stream_sel:"))
         self.app.add_handler(CallbackQueryHandler(speedtest_callback, pattern="^speedtest_"))
         self.app.add_handler(MessageHandler((filters.TEXT | filters.FORWARDED) & ~filters.COMMAND, self.manage_users_add_text))
 

@@ -1394,30 +1394,6 @@ class TestStreamCheckDualStack(unittest.TestCase):
             self.assertEqual(mock_run.call_args[0][1], "2")
             self.assertTrue(any("使用缓存: HK" in call.args[0] for call in msg.reply_text.call_args_list))
 
-    def test_stream_check_first_run_timeout_fallback_to_config(self):
-        from handlers.stream_check import stream_check_handler
-        update = MagicMock()
-        update.effective_user.id = 6256565801
-        msg = AsyncMock()
-        update.message = msg
-        update.callback_query = None
-
-        context = MagicMock()
-        context.args = []
-
-        # No cache, API returns None
-        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
-             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv_no_cache", "name": "新节点", "stream_check_input": "3", "remote_ssh_enabled": False}, False, False))), \
-             patch("handlers.stream_check.get_cached_country_code", return_value=None), \
-             patch("handlers.stream_check.detect_ip_country_code", return_value=None), \
-             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes", 10.0)) as mock_run:
-
-            asyncio.run(stream_check_handler(update, context))
-
-            mock_run.assert_called_once()
-            self.assertEqual(mock_run.call_args[0][1], "3")
-            self.assertTrue(any("使用配置默认" in call.args[0] for call in msg.reply_text.call_args_list))
-
     def test_stream_check_manual_mode_no_detect(self):
         from handlers.stream_check import stream_check_handler
         update = MagicMock()
@@ -1440,7 +1416,149 @@ class TestStreamCheckDualStack(unittest.TestCase):
             mock_detect.assert_not_called()
             mock_run.assert_called_once()
             self.assertEqual(mock_run.call_args[0][1], "4")
-            self.assertTrue(any("手动设定" in call.args[0] for call in msg.reply_text.call_args_list))
+            self.assertTrue(any("管理员固定设定" in call.args[0] for call in msg.reply_text.call_args_list))
+
+    def test_validate_and_normalize_region(self):
+        from handlers.stream_check import validate_and_normalize_region
+        # Valid cases
+        self.assertEqual(validate_and_normalize_region("auto"), (True, "auto", None))
+        self.assertEqual(validate_and_normalize_region("API"), (True, "auto", None))
+        self.assertEqual(validate_and_normalize_region("2"), (True, "2", None))
+        self.assertEqual(validate_and_normalize_region("0"), (True, "0", None))
+        self.assertEqual(validate_and_normalize_region("99"), (True, "99", None))
+        self.assertEqual(validate_and_normalize_region("HK"), (True, "2", None))
+        self.assertEqual(validate_and_normalize_region("jp"), (True, "3", None))
+        self.assertEqual(validate_and_normalize_region("US"), (True, "4", None))
+        self.assertEqual(validate_and_normalize_region("tw"), (True, "1", None))
+
+        # Invalid cases
+        ok, norm, err = validate_and_normalize_region("")
+        self.assertFalse(ok)
+        ok, norm, err = validate_and_normalize_region("999")
+        self.assertFalse(ok)
+        ok, norm, err = validate_and_normalize_region("invalid_xyz")
+        self.assertFalse(ok)
+        self.assertIn("无效的位置参数", err)
+
+    def test_apply_stream_region_setting_mutual_exclusivity(self):
+        from config import config
+        from handlers.stream_check import apply_stream_region_setting
+        # Fix region to 3 (JP) -> auto_detect must become False (mutually exclusive)
+        msg = apply_stream_region_setting("3")
+        self.assertFalse(config["stream_check_auto_detect"])
+        self.assertEqual(config["stream_check_input"], "3")
+        self.assertIn("互斥机制生效", msg)
+
+        # Restore auto -> auto_detect must become True
+        msg2 = apply_stream_region_setting("auto")
+        self.assertTrue(config["stream_check_auto_detect"])
+        self.assertIn("API 自动探测模式", msg2)
+
+    def test_stream_check_interactive_selection_user_clicks(self):
+        from handlers.stream_check import _PENDING_STREAM_SELECTIONS, stream_check_handler, stream_select_callback
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        prompt_msg = AsyncMock()
+        msg.reply_text = AsyncMock(return_value=prompt_msg)
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = []
+
+        async def simulate_user_click():
+            await asyncio.sleep(0.05)
+            token = list(_PENDING_STREAM_SELECTIONS.keys())[0]
+            cb_update = MagicMock()
+            query = AsyncMock()
+            query.data = f"stream_sel:srv_interactive:{token}:1"
+            cb_update.callback_query = query
+            await stream_select_callback(cb_update, context)
+
+        # Neither API nor cache available -> triggers prompt
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv_interactive", "name": "待测节点", "stream_check_auto_detect": True, "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.detect_ip_country_code", return_value=None), \
+             patch("handlers.stream_check.get_cached_country_code", return_value=None), \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes (Region: TW)", 12.0)) as mock_run:
+
+            async def run_flow():
+                click_task = asyncio.create_task(simulate_user_click())
+                await stream_check_handler(update, context)
+                await click_task
+
+            asyncio.run(run_flow())
+
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "1")
+            prompt_msg.edit_text.assert_called_once()
+
+    def test_stream_check_interactive_selection_timeout_fallback_to_plan2(self):
+        from handlers.stream_check import stream_check_handler
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        prompt_msg = AsyncMock()
+        msg.reply_text = AsyncMock(return_value=prompt_msg)
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = []
+
+        async def fake_wait_for(fut, timeout):
+            if asyncio.iscoroutine(fut):
+                fut.close()
+            raise asyncio.TimeoutError()
+
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv_timeout", "name": "超时节点", "stream_check_auto_detect": True, "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.detect_ip_country_code", return_value=None), \
+             patch("handlers.stream_check.get_cached_country_code", return_value=None), \
+             patch("asyncio.wait_for", side_effect=fake_wait_for), \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes", 12.0)) as mock_run:
+
+            asyncio.run(stream_check_handler(update, context))
+
+            prompt_msg.delete.assert_called_once()
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "0")
+            self.assertTrue(any("选择超时未作答，自动按通用方案执行" in call.args[0] for call in msg.reply_text.call_args_list))
+
+    def test_set_stream_region_handler_and_callback(self):
+        from handlers.stream_check import set_stream_region_callback, set_stream_region_handler
+        update = MagicMock()
+        msg = AsyncMock()
+        update.message = msg
+        update.callback_query = None
+
+        # 1. Admin sends command with arg /set_stream_region JP
+        context = MagicMock()
+        context.args = ["JP"]
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)):
+            asyncio.run(set_stream_region_handler(update, context))
+            msg.reply_text.assert_called_once()
+            self.assertIn("互斥机制生效", msg.reply_text.call_args[0][0])
+
+        # 2. Admin sends command without args -> shows keyboard
+        context.args = []
+        msg.reset_mock()
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)):
+            asyncio.run(set_stream_region_handler(update, context))
+            msg.reply_text.assert_called_once()
+            self.assertIn("流媒体检测区域设置", msg.reply_text.call_args[0][0])
+            self.assertIsNotNone(msg.reply_text.call_args[1].get("reply_markup"))
+
+        # 3. Callback query click: set_stream_reg:auto
+        cb_update = MagicMock()
+        query = AsyncMock()
+        query.data = "set_stream_reg:auto"
+        cb_update.callback_query = query
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)):
+            asyncio.run(set_stream_region_callback(cb_update, context))
+            query.edit_message_text.assert_called_once()
+            self.assertIn("API 自动探测模式", query.edit_message_text.call_args[0][0])
 
 
 class TestPingDualStack(unittest.TestCase):
