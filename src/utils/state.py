@@ -47,6 +47,7 @@ def _default_state() -> Dict[str, Any]:
     base = _default_server_state()
     base["servers"] = {}
     base["user_active_servers"] = {}
+    base["known_users"] = {}
     return base
 
 
@@ -75,6 +76,8 @@ def load_state() -> Dict[str, Any]:
             state["servers"]["default"] = default_entry
         if "user_active_servers" not in state or not isinstance(state["user_active_servers"], dict):
             state["user_active_servers"] = {}
+        if "known_users" not in state or not isinstance(state["known_users"], dict):
+            state["known_users"] = {}
         return state
     except Exception:
         return _default_state()

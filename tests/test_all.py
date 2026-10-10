@@ -1743,6 +1743,300 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
             lock.release()
 
 
+class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from utils.user_cache import _reset_cache_for_testing
+        _reset_cache_for_testing()
+
+    def tearDown(self):
+        from utils.user_cache import _reset_cache_for_testing
+        _reset_cache_for_testing()
+
+    def test_clean_username(self):
+        from utils.user_cache import clean_username
+        self.assertEqual(clean_username("@alice"), "alice")
+        self.assertEqual(clean_username("alice"), "alice")
+        self.assertEqual(clean_username("https://t.me/Alice_123"), "alice_123")
+        self.assertEqual(clean_username("http://t.me/Alice_123/"), "alice_123")
+        self.assertEqual(clean_username("t.me/Alice_123?start=1"), "alice_123")
+        self.assertEqual(clean_username("tg://resolve?domain=Alice_123"), "alice_123")
+        self.assertEqual(clean_username("telegram.me/alice"), "alice")
+        # Invalid
+        self.assertEqual(clean_username(""), "")
+        self.assertEqual(clean_username("@a"), "")
+        self.assertEqual(clean_username("bad-user-name"), "")
+
+    @patch("utils.user_cache.save_state")
+    @patch("utils.user_cache.load_state")
+    def test_record_and_find_user(self, mock_load, mock_save):
+        from utils.user_cache import (
+            find_user_id_by_username,
+            format_user_with_id,
+            get_known_user,
+            record_known_user,
+        )
+        mock_load.return_value = {"known_users": {}}
+
+        record_known_user(12345678, "Alice_Bot", "Alice Smith")
+        mock_save.assert_called_once()
+
+        self.assertEqual(find_user_id_by_username("alice_bot"), "12345678")
+        self.assertEqual(find_user_id_by_username("@alice_bot"), "12345678")
+        self.assertEqual(find_user_id_by_username("https://t.me/Alice_Bot"), "12345678")
+        self.assertIsNone(find_user_id_by_username("bob"))
+
+        info = get_known_user("12345678")
+        self.assertIsNotNone(info)
+        self.assertEqual(info["u"], "alice_bot")
+        self.assertEqual(info["n"], "Alice Smith")
+
+        self.assertEqual(format_user_with_id("12345678"), "`12345678` (@alice_bot)")
+        self.assertEqual(format_user_with_id("88888888"), "`88888888`")
+
+    @patch("utils.user_cache.save_state")
+    @patch("utils.user_cache.load_state")
+    def test_parse_and_resolve_user_id(self, mock_load, mock_save):
+        from utils.user_cache import parse_and_resolve_user_id, record_known_user
+        mock_load.return_value = {"known_users": {}}
+        record_known_user("123456", "my_admin", "Admin User")
+
+        # 1. Pure digits
+        uid, uname, err = parse_and_resolve_user_id("987654321")
+        self.assertEqual(uid, "987654321")
+        self.assertIsNone(err)
+
+        # 2. Known username
+        uid, uname, err = parse_and_resolve_user_id("@my_admin")
+        self.assertEqual(uid, "123456")
+        self.assertEqual(uname, "my_admin")
+        self.assertIsNone(err)
+
+        # 3. Known t.me link
+        uid, uname, err = parse_and_resolve_user_id("t.me/my_admin")
+        self.assertEqual(uid, "123456")
+        self.assertEqual(uname, "my_admin")
+        self.assertIsNone(err)
+
+        # 4. Unknown username
+        uid, uname, err = parse_and_resolve_user_id("@stranger_person")
+        self.assertIsNone(uid)
+        self.assertEqual(uname, "stranger_person")
+        self.assertIn("未在机器人本地记录中找到用户 @stranger_person", err)
+        self.assertIn("/start", err)
+
+        # 5. Invalid input
+        uid, uname, err = parse_and_resolve_user_id("invalid!input#")
+        self.assertIsNone(uid)
+        self.assertIn("输入格式无效", err)
+
+    def test_extract_user_from_forward(self):
+        from utils.user_cache import extract_user_from_forward
+
+        # 1. Modern API 7.0+ (forward_origin with user)
+        msg_modern = MagicMock()
+        msg_modern.forward_origin = MagicMock()
+        msg_modern.forward_origin.type = "user"
+        msg_modern.forward_origin.sender_user.id = 556677
+        msg_modern.forward_origin.sender_user.username = "sender_uname"
+        msg_modern.forward_origin.sender_user.full_name = "Sender Name"
+
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            uid, uname, err = extract_user_from_forward(msg_modern)
+            self.assertEqual(uid, "556677")
+            self.assertEqual(uname, "sender_uname")
+            self.assertIsNone(err)
+
+        # 2. Modern API 7.0+ (hidden_user)
+        msg_hidden = MagicMock()
+        msg_hidden.forward_origin = MagicMock()
+        msg_hidden.forward_origin.type = "hidden_user"
+        uid, uname, err = extract_user_from_forward(msg_hidden)
+        self.assertIsNone(uid)
+        self.assertIn("隐私保护", err)
+
+        # 3. Legacy forward_from
+        msg_legacy = MagicMock()
+        msg_legacy.forward_origin = None
+        msg_legacy.forward_from.id = 889900
+        msg_legacy.forward_from.username = "legacy_user"
+        msg_legacy.forward_from.full_name = "Legacy User"
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            uid, uname, err = extract_user_from_forward(msg_legacy)
+            self.assertEqual(uid, "889900")
+            self.assertEqual(uname, "legacy_user")
+            self.assertIsNone(err)
+
+    @patch("bot.persist_config_value")
+    async def test_add_admin_with_username_success(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+        from utils.user_cache import record_known_user
+
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            record_known_user("44444", "alice_new", "Alice")
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        bot.sync_user_bot_commands = AsyncMock()
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = ["@alice_new"]
+
+        await bot.add_admin(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("已成功添加普通管理员", sent)
+        self.assertIn("44444", sent)
+        self.assertIn("@alice_new", sent)
+        self.assertIn("44444", config["telegram_admin_user_ids"])
+        bot.sync_user_bot_commands.assert_called_once_with("44444", "admin")
+
+    @patch("bot.persist_config_value")
+    async def test_add_admin_with_unknown_username_rejected(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        bot.sync_user_bot_commands = AsyncMock()
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = ["@ghost_user"]
+
+        await bot.add_admin(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("未在机器人本地记录中找到用户 @ghost_user", sent)
+        self.assertNotIn("ghost_user", config["telegram_admin_user_ids"])
+        bot.sync_user_bot_commands.assert_not_called()
+
+    @patch("bot.persist_config_value")
+    async def test_add_super_admin_with_username_success(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+        from utils.user_cache import record_known_user
+
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            record_known_user("77777", "super_bob", "Bob")
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        bot.sync_user_bot_commands = AsyncMock()
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = ["t.me/super_bob"]
+
+        await bot.add_super_admin(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("已成功添加超级管理员", sent)
+        self.assertIn("77777", sent)
+        self.assertIn("77777", config["telegram_super_admin_user_ids"])
+        bot.sync_user_bot_commands.assert_called_once_with("77777", "super_admin")
+
+    @patch("bot.persist_config_value")
+    async def test_remove_admin_with_username_success(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+        from utils.user_cache import record_known_user
+
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            record_known_user("22222", "admin_charlie", "Charlie")
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        bot.sync_user_bot_commands = AsyncMock()
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = ["@admin_charlie"]
+
+        await bot.remove_admin(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("已成功删除普通管理员", sent)
+        self.assertIn("22222", sent)
+        self.assertNotIn("22222", config["telegram_admin_user_ids"])
+        bot.sync_user_bot_commands.assert_called_once_with("22222", "")
+
+    @patch("bot.persist_config_value")
+    async def test_manage_users_add_text_with_username_and_forward(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+        from utils.user_cache import record_known_user
+
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            record_known_user("33333", "dave_user", "Dave")
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        bot.sync_user_bot_commands = AsyncMock()
+
+        # 1. Text input with @username
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.text = "@dave_user"
+        mock_update.message.forward_origin = None
+        mock_update.message.forward_from = None
+        mock_update.message.forward_sender_name = None
+        mock_update.message.reply_text = AsyncMock()
+
+        mock_context = MagicMock()
+        mock_context.user_data = {"awaiting_add_admin": True, "awaiting_add_role": "admin"}
+
+        await bot.manage_users_add_text(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("已成功添加普通管理员", sent)
+        self.assertIn("33333", sent)
+        self.assertIn("33333", config["telegram_admin_user_ids"])
+        bot.sync_user_bot_commands.assert_called_once_with("33333", "admin")
+
+        # 2. Forwarded message input
+        mock_update2 = MagicMock()
+        mock_update2.effective_user.id = 11111
+        mock_update2.message.text = "Hello world"
+        mock_update2.message.forward_origin = MagicMock()
+        mock_update2.message.forward_origin.type = "user"
+        mock_update2.message.forward_origin.sender_user.id = 66666
+        mock_update2.message.forward_origin.sender_user.username = "eve_forward"
+        mock_update2.message.forward_origin.sender_user.full_name = "Eve"
+        mock_update2.message.reply_text = AsyncMock()
+
+        mock_context2 = MagicMock()
+        mock_context2.user_data = {"awaiting_add_admin": True, "awaiting_add_role": "admin"}
+
+        with patch("utils.user_cache.save_state"), patch("utils.user_cache.load_state", return_value={"known_users": {}}):
+            await bot.manage_users_add_text(mock_update2, mock_context2)
+        mock_update2.message.reply_text.assert_called_once()
+        sent2 = mock_update2.message.reply_text.call_args[0][0]
+        self.assertIn("已成功添加普通管理员", sent2)
+        self.assertIn("66666", sent2)
+        self.assertIn("66666", config["telegram_admin_user_ids"])
+        bot.sync_user_bot_commands.assert_called_with("66666", "admin")
+
+
 if __name__ == "__main__":
     unittest.main()
 

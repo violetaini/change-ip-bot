@@ -195,11 +195,11 @@ VPS IP Bot natively supports managing multiple distinct VPS, cloud, and resident
 | `/auto_stop` | None | Super Admin | Disable daily scheduled automatic IP rotation |
 | `/auto_status`| None | Admin | View scheduled automatic change status and per-node schedules |
 | `/set_auto_time`| `HH:MM` | Super Admin | Set daily automatic change time in Beijing Time (`04:00`) |
-| `/manage_users`| None | Super Admin | Interactive button-based admin management panel (Add/Select/Delete Super or Normal Admin; at least 1 Super Admin retained) |
-| `/add_admin` | `<user_id>` | Super Admin | Add a normal administrator by Telegram user ID |
-| `/add_super_admin` | `<user_id>` | Super Admin | Add or promote a user to Super Administrator |
-| `/demote_admin` | `<user_id>` | Super Admin | Demote a Super Administrator to Normal Admin (min 1 retained) |
-| `/remove_admin` | `[user_id]` | Super Admin | Remove an administrator (super admins must have at least 1 remaining) |
+| `/manage_users`| None | Super Admin | Interactive button-based admin management panel (Add/Select/Promote/Demote/Delete; supports user ID, @username, t.me link, or forwarded message) |
+| `/add_admin` | `<user>` | Super Admin | Add a normal administrator by Telegram ID, `@username`, or `t.me/username` |
+| `/add_super_admin` | `<user>` | Super Admin | Add or promote a user to Super Administrator by ID, `@username`, or `t.me/username` |
+| `/demote_admin` | `<user>` | Super Admin | Demote a Super Administrator to Normal Admin (min 1 retained) |
+| `/remove_admin` | `[user]` | Super Admin | Remove an administrator by ID, `@username`, or interactive buttons (min 1 Super Admin retained) |
 | `/logs` | `[lines]` | Super Admin | View recent bot logs with automatic credential redaction |
 | `/dns_status` | None | Super Admin | Inspect current dynamic DNS configuration |
 | `/set_dns_provider` | `<provider>` | Super Admin | Set DNS provider (`cloudflare`, `huawei`, `aliyun`, etc.) |

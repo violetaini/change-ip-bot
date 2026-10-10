@@ -26,8 +26,22 @@ def _legacy_allowed(update):
     return user_id in configured_chats or chat_id in configured_chats
 
 
+def _record_user_if_present(user):
+    if user and getattr(user, "id", None):
+        try:
+            from utils.user_cache import record_known_user
+            record_known_user(
+                user.id,
+                getattr(user, "username", "") or "",
+                getattr(user, "full_name", "") or getattr(user, "first_name", "") or "",
+            )
+        except Exception:
+            pass
+
+
 def get_user_role(update):
-    user = update.effective_user
+    user = update.effective_user if update else None
+    _record_user_if_present(user)
     user_id = str(user.id) if user else ""
     if not user_id:
         return ""
@@ -50,7 +64,8 @@ def get_user_role(update):
 
 
 def _describe_user(update):
-    user = update.effective_user
+    user = update.effective_user if update else None
+    _record_user_if_present(user)
     user_id = str(user.id) if user else ""
     user_name = user.username if user else ""
     full_name = user.full_name if user else ""
