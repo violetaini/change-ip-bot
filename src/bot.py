@@ -562,7 +562,7 @@ class VPSChangeIPBot:
             if tmp_dir and os.path.isdir(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def get_scoped_commands(self) -> tuple[list[BotCommand], list[BotCommand]]:
+    def get_scoped_commands(self) -> tuple[list[BotCommand], list[BotCommand], list[BotCommand]]:
         active_commands = [
             cmd for cmd in BOT_COMMANDS
             if is_multi_server_mode() or cmd.command not in ("servers", "use")
@@ -574,9 +574,11 @@ class VPSChangeIPBot:
             "logs", "dns_status", "set_dns_provider", "set_dns_record",
             "dns_update_on", "dns_update_off"
         }
+        public_cmd_names = {"start", "help"}
         super_admin_cmds = active_commands
         normal_admin_cmds = [cmd for cmd in active_commands if cmd.command not in super_admin_cmd_names]
-        return super_admin_cmds, normal_admin_cmds
+        public_cmds = [cmd for cmd in active_commands if cmd.command in public_cmd_names]
+        return super_admin_cmds, normal_admin_cmds, public_cmds
 
     async def sync_user_bot_commands(self, user_id: int | str, role: str):
         bot_app = getattr(self, "app", None)
@@ -584,7 +586,7 @@ class VPSChangeIPBot:
             return
         try:
             cid = int(str(user_id).strip())
-            super_cmds, normal_cmds = self.get_scoped_commands()
+            super_cmds, normal_cmds, public_cmds = self.get_scoped_commands()
             if role == "super_admin":
                 await bot_app.bot.set_my_commands(super_cmds, scope=BotCommandScopeChat(chat_id=cid))
                 await bot_app.bot.set_chat_menu_button(chat_id=cid, menu_button=MenuButtonCommands())
@@ -595,20 +597,24 @@ class VPSChangeIPBot:
                 logger.info(f"已动态为用户 {cid} 实时更新【普通管理员】受限运维命令菜单")
             else:
                 try:
-                    await bot_app.bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=cid))
+                    await bot_app.bot.set_my_commands(public_cmds, scope=BotCommandScopeChat(chat_id=cid))
+                    await bot_app.bot.set_chat_menu_button(chat_id=cid, menu_button=MenuButtonCommands())
                 except Exception:
-                    pass
-                logger.info(f"已清理用户 {cid} 的私聊特权命令菜单")
+                    try:
+                        await bot_app.bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=cid))
+                    except Exception:
+                        pass
+                logger.info(f"已清理用户 {cid} 的特权命令菜单，已将其重置为仅公开命令（/start, /help）")
         except Exception as e:
             logger.debug(f"动态同步用户 {user_id} 命令菜单失败: {e}")
 
     async def post_init(self, application: Application):
         try:
-            super_admin_cmds, normal_admin_cmds = self.get_scoped_commands()
+            super_admin_cmds, normal_admin_cmds, public_cmds = self.get_scoped_commands()
 
-            # 默认全局作用域
-            await application.bot.set_my_commands(normal_admin_cmds, scope=BotCommandScopeDefault())
-            await application.bot.set_my_commands(normal_admin_cmds, scope=BotCommandScopeAllPrivateChats())
+            # 默认全局作用域：仅暴露基础公开命令（/start, /help），保护所有运维与配置命令对非授权用户不可见
+            await application.bot.set_my_commands(public_cmds, scope=BotCommandScopeDefault())
+            await application.bot.set_my_commands(public_cmds, scope=BotCommandScopeAllPrivateChats())
             await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
             # 为超级管理员私聊设置全量管理命令
@@ -631,7 +637,7 @@ class VPSChangeIPBot:
                 except Exception as ex:
                     logger.debug(f"设置普管命令菜单失败 (chat_id={nid_str}): {ex}")
 
-            logger.info("已注册 Telegram 机器人命令菜单与 MenuButton（含全局、普管及超管专属作用域）")
+            logger.info("已注册 Telegram 机器人命令菜单与 MenuButton（含全局基础、普管运维及超管全量专属作用域）")
         except Exception as e:
             logger.warning(f"注册 Telegram 命令菜单失败: {e}")
 

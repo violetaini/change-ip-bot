@@ -17,6 +17,13 @@ for mod in ["loguru", "telegram", "telegram.ext"]:
         except ImportError:
             sys.modules[mod] = MagicMock()
 
+if isinstance(sys.modules.get("telegram"), MagicMock):
+    class FakeBotCommand:
+        def __init__(self, command, description=""):
+            self.command = command
+            self.description = description
+    sys.modules["telegram"].BotCommand = FakeBotCommand
+
 from utils.network import (
     ChangeIPTimeoutError,
     call_boil_change_ip,
@@ -824,6 +831,45 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         sent_text = mock_update.message.reply_text.call_args[0][0]
         self.assertIn("超级管理员至少必须保留 1 个", sent_text)
         bot.sync_user_bot_commands.assert_not_called()
+
+    def test_get_scoped_commands(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        super_cmds, normal_cmds, public_cmds = bot.get_scoped_commands()
+
+        # Public commands must only contain start and help
+        public_names = {c.command for c in public_cmds}
+        self.assertEqual(public_names, {"start", "help"})
+
+        # Normal admin commands must contain daily operational tools but NOT sensitive admin commands
+        normal_names = {c.command for c in normal_cmds}
+        self.assertIn("check", normal_names)
+        self.assertIn("change", normal_names)
+        self.assertIn("quality", normal_names)
+        self.assertNotIn("manage_users", normal_names)
+        self.assertNotIn("auto_start", normal_names)
+        self.assertNotIn("set_ip_mode", normal_names)
+
+        # Super admin commands must contain full commands
+        super_names = {c.command for c in super_cmds}
+        self.assertIn("manage_users", super_names)
+        self.assertIn("auto_start", super_names)
+        self.assertIn("set_ip_mode", super_names)
+
+    async def test_sync_user_bot_commands_deleted_user(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        bot.app = MagicMock()
+        bot.app.bot = MagicMock()
+        bot.app.bot.set_my_commands = AsyncMock()
+        bot.app.bot.set_chat_menu_button = AsyncMock()
+
+        # When role is empty (user deleted or revoked), must set only public commands (/start, /help)
+        await bot.sync_user_bot_commands("987654", "")
+        bot.app.bot.set_my_commands.assert_called_once()
+        passed_cmds = bot.app.bot.set_my_commands.call_args[0][0]
+        passed_names = {c.command for c in passed_cmds}
+        self.assertEqual(passed_names, {"start", "help"})
 
 
 class TestSystemDeps(unittest.TestCase):
