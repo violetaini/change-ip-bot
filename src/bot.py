@@ -257,6 +257,58 @@ def get_log_path() -> Path:
     return Path(__file__).resolve().parents[1] / "logs" / "bot.log"
 
 
+def get_effective_msg(update: Update):
+    if not update:
+        return None
+    return getattr(update, "message", None) or (update.callback_query.message if getattr(update, "callback_query", None) else None) or getattr(update, "effective_message", None)
+
+
+def build_main_menu_keyboard(role: str) -> InlineKeyboardMarkup:
+    keyboard = []
+    # Row 1: 核心 IP 运维
+    keyboard.append([
+        InlineKeyboardButton("🔍 检查 IP", callback_data="main_menu:check"),
+        InlineKeyboardButton("🔄 更换 IP", callback_data="main_menu:change"),
+        InlineKeyboardButton("📊 换IP状态", callback_data="main_menu:ip_status"),
+    ])
+    # Row 2: 网络诊断与分析
+    keyboard.append([
+        InlineKeyboardButton("🎬 流媒体检测", callback_data="main_menu:stream"),
+        InlineKeyboardButton("📈 IP质量报告", callback_data="main_menu:quality"),
+        InlineKeyboardButton("⚡ 网络测速", callback_data="main_menu:speedtest"),
+        InlineKeyboardButton("🏓 Ping延迟", callback_data="main_menu:ping"),
+    ])
+    # Row 3: 节点与流媒体区域
+    row3 = []
+    if is_multi_server_mode():
+        row3.append(InlineKeyboardButton("🖥️ 节点看板", callback_data="main_menu:servers"))
+    row3.append(InlineKeyboardButton("📍 流媒体区域设置", callback_data="main_menu:stream_region"))
+    keyboard.append(row3)
+
+    # Row 4: 管理员运维
+    keyboard.append([
+        InlineKeyboardButton("👥 管理员架构", callback_data="main_menu:admins"),
+        InlineKeyboardButton("⏰ 自动换IP状态", callback_data="main_menu:auto_status"),
+        InlineKeyboardButton("🏥 系统体检", callback_data="main_menu:health"),
+    ])
+
+    # Row 5: 超级管理员高级管理
+    if role == "super_admin":
+        keyboard.append([
+            InlineKeyboardButton("⚙️ 换IP模式", callback_data="main_menu:set_ip_mode"),
+            InlineKeyboardButton("🌐 DNS 状态", callback_data="main_menu:dns_status"),
+            InlineKeyboardButton("👤 用户权限管理", callback_data="main_menu:manage_users"),
+            InlineKeyboardButton("📋 查看日志", callback_data="main_menu:logs"),
+        ])
+
+    # Row 6: 刷新主面板
+    keyboard.append([
+        InlineKeyboardButton("🔄 刷新主控制台", callback_data="main_menu:refresh"),
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
 class VPSChangeIPBot:
     def __init__(self):
         self.app = None
@@ -338,10 +390,85 @@ class VPSChangeIPBot:
             ]
             sections.append("\n".join(super_ops))
 
-        await update.message.reply_text(
-            "\n\n".join(sections),
-            parse_mode="Markdown",
-        )
+        reply_markup = build_main_menu_keyboard(role)
+        query = update.callback_query
+        if query and query.message:
+            try:
+                await query.edit_message_text(
+                    "\n\n".join(sections),
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup,
+                )
+                return
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    return
+
+        msg = get_effective_msg(update)
+        if msg:
+            await msg.reply_text(
+                "\n\n".join(sections),
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+
+    async def main_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_user_permission(update):
+            return
+
+        query = update.callback_query
+        if not query:
+            return
+
+        action = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+        await query.answer()
+
+        context.args = []
+
+        if action == "refresh":
+            await self.start(update, context)
+        elif action == "check":
+            await check_ip_status(update, context)
+        elif action == "change":
+            await change_ip_handler(update, context)
+        elif action == "ip_status":
+            await self.ip_status(update, context)
+        elif action == "stream":
+            await stream_check_handler(update, context)
+        elif action == "quality":
+            await ip_quality_handler(update, context)
+        elif action == "speedtest":
+            await speedtest_handler(update, context)
+        elif action == "ping":
+            await ping_handler(update, context)
+        elif action == "servers":
+            await self.servers_handler(update, context)
+        elif action == "stream_region":
+            await set_stream_region_handler(update, context)
+        elif action == "admins":
+            await self.admins_handler(update, context)
+        elif action == "auto_status":
+            await self.auto_status(update, context)
+        elif action == "auto_start":
+            await self.auto_start(update, context)
+        elif action == "auto_stop":
+            await self.auto_stop(update, context)
+        elif action == "health":
+            await self.health(update, context)
+        elif action == "set_ip_mode":
+            await self.set_ip_mode(update, context)
+        elif action == "dns_status":
+            await self.dns_status(update, context)
+        elif action == "dns_on":
+            await self.dns_update_on(update, context)
+        elif action == "dns_off":
+            await self.dns_update_off(update, context)
+        elif action == "manage_users":
+            await self.manage_users(update, context)
+        elif action == "logs":
+            await self.logs(update, context)
+        else:
+            logger.warning(f"未知的主菜单操作: {action}")
 
     async def auto_change_job(self, context: ContextTypes.DEFAULT_TYPE):
         job_data = context.job.data if context.job and isinstance(context.job.data, dict) else {}
@@ -759,35 +886,42 @@ class VPSChangeIPBot:
         if not await check_super_admin_permission(update):
             return
 
+        msg = get_effective_msg(update)
         try:
             config["auto_change_enabled"] = True
             persist_config_value("auto_change_enabled", True)
             scheduled = self.schedule_auto_change_job()
         except Exception as e:
             logger.exception(f"启用自动换IP失败: {e}")
-            await update.message.reply_text(f"启用自动换IP失败：{redact_text(str(e))}")
+            if msg:
+                await msg.reply_text(f"启用自动换IP失败：{redact_text(str(e))}")
             return
 
         if scheduled:
             run_time = parse_auto_change_time()
-            await update.message.reply_text(f"已启用自动换IP，每天北京时间 {run_time.strftime('%H:%M')} 执行一次。")
+            if msg:
+                await msg.reply_text(f"已启用自动换IP，每天北京时间 {run_time.strftime('%H:%M')} 执行一次。")
         else:
-            await update.message.reply_text("已写入启用配置，但未成功注册定时任务（请检查 JobQueue 或时间配置）。")
+            if msg:
+                await msg.reply_text("已写入启用配置，但未成功注册定时任务（请检查 JobQueue 或时间配置）。")
 
     async def auto_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
             return
 
+        msg = get_effective_msg(update)
         try:
             config["auto_change_enabled"] = False
             persist_config_value("auto_change_enabled", False)
             removed = self.cancel_auto_change_jobs()
         except Exception as e:
             logger.exception(f"关闭自动换IP失败: {e}")
-            await update.message.reply_text(f"关闭自动换IP失败：{redact_text(str(e))}")
+            if msg:
+                await msg.reply_text(f"关闭自动换IP失败：{redact_text(str(e))}")
             return
 
-        await update.message.reply_text(f"已关闭自动换IP，已移除 {removed} 个运行中的定时任务。")
+        if msg:
+            await msg.reply_text(f"已关闭自动换IP，已移除 {removed} 个运行中的定时任务。")
 
     async def auto_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -815,7 +949,18 @@ class VPSChangeIPBot:
                 s_time = s.get("auto_change_time", auto_time)
                 lines.append(f"• {s_name} ({sid}): {'已启用' if s_en else '已关闭'} (时间: {s_time})")
 
-        await update.message.reply_text("\n".join(lines))
+        buttons = []
+        role = get_user_role(update)
+        if role == "super_admin":
+            if enabled:
+                buttons.append([InlineKeyboardButton("⏹️ 关闭自动换IP", callback_data="main_menu:auto_stop")])
+            else:
+                buttons.append([InlineKeyboardButton("▶️ 启用自动换IP", callback_data="main_menu:auto_start")])
+        buttons.append([InlineKeyboardButton("🔄 刷新状态", callback_data="main_menu:auto_status")])
+
+        msg = get_effective_msg(update)
+        if msg:
+            await msg.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
 
     async def set_auto_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -882,11 +1027,13 @@ class VPSChangeIPBot:
             buttons.append([InlineKeyboardButton("⚙️ 打开管理员管理控制台", callback_data="manage_users:menu")])
         buttons.append([InlineKeyboardButton("🔄 刷新信息", callback_data="refresh_admins_info")])
 
-        await update.message.reply_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        msg = get_effective_msg(update)
+        if msg:
+            await msg.reply_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
     async def refresh_admins_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -1180,11 +1327,13 @@ class VPSChangeIPBot:
         context.user_data.pop("awaiting_add_role", None)
         context.user_data.pop("selected_admin_id", None)
         self._user_management_selected_admin_id = ""
-        await update.message.reply_text(
-            self.user_management_text(update),
-            parse_mode="Markdown",
-            reply_markup=self.user_management_keyboard(),
-        )
+        msg = get_effective_msg(update)
+        if msg:
+            await msg.reply_text(
+                self.user_management_text(update),
+                parse_mode="Markdown",
+                reply_markup=self.user_management_keyboard(),
+            )
 
     async def manage_users_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1656,6 +1805,7 @@ class VPSChangeIPBot:
         if not await check_super_admin_permission(update):
             return
 
+        msg = get_effective_msg(update)
         try:
             limit = int(context.args[0]) if context.args else 50
         except ValueError:
@@ -1664,18 +1814,22 @@ class VPSChangeIPBot:
 
         log_path = get_log_path()
         if not log_path.exists():
-            await update.message.reply_text(f"日志文件不存在: {log_path}")
+            if msg:
+                await msg.reply_text(f"日志文件不存在: {log_path}")
             return
 
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 刷新最新日志", callback_data="main_menu:logs")]])
         try:
             lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
             text = redact_text("\n".join(lines) or "日志为空")
             if len(text) > 3500:
                 text = text[-3500:]
-            await update.message.reply_text(f"最近 {limit} 行日志:\n{text}")
+            if msg:
+                await msg.reply_text(f"最近 {limit} 行日志:\n{text}", reply_markup=reply_markup)
         except Exception as e:
             logger.exception(f"读取日志失败: {e}")
-            await update.message.reply_text(f"读取日志失败：{redact_text(str(e))}")
+            if msg:
+                await msg.reply_text(f"读取日志失败：{redact_text(str(e))}")
 
     async def dns_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1686,17 +1840,28 @@ class VPSChangeIPBot:
         record_name = get_dns_record_name().strip() or "未配置"
         record_type = str(config.get("dns_record_type") or config.get("huawei_dns_record_type", "A")).strip().upper()
         ttl = int(config.get("dns_ttl") or config.get("huawei_dns_ttl", 60))
+        dns_enabled = is_dns_update_enabled()
 
-        await update.message.reply_text(
-            "DNS更新配置\n"
-            f"状态: {'已启用' if is_dns_update_enabled() else '未启用'}\n"
-            f"服务商: {provider}\n"
-            f"Zone: {zone_name}\n"
-            f"记录: {record_name}\n"
-            f"类型: {record_type}\n"
-            f"TTL: {ttl}\n"
-            f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}"
-        )
+        buttons = []
+        if dns_enabled:
+            buttons.append([InlineKeyboardButton("🔴 关闭DNS更新", callback_data="main_menu:dns_off")])
+        else:
+            buttons.append([InlineKeyboardButton("🟢 开启DNS更新", callback_data="main_menu:dns_on")])
+        buttons.append([InlineKeyboardButton("🔄 刷新DNS状态", callback_data="main_menu:dns_status")])
+
+        msg = get_effective_msg(update)
+        if msg:
+            await msg.reply_text(
+                "DNS更新配置\n"
+                f"状态: {'已启用' if dns_enabled else '未启用'}\n"
+                f"服务商: {provider}\n"
+                f"Zone: {zone_name}\n"
+                f"记录: {record_name}\n"
+                f"类型: {record_type}\n"
+                f"TTL: {ttl}\n"
+                f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
     async def set_dns_provider(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1797,11 +1962,13 @@ class VPSChangeIPBot:
         if not await check_super_admin_permission(update):
             return
 
+        msg = get_effective_msg(update)
         provider = get_dns_provider_name()
         if not provider:
-            await update.message.reply_text(
-                "尚未配置DNS服务商。请先使用 /set_dns_provider PROVIDER。"
-            )
+            if msg:
+                await msg.reply_text(
+                    "尚未配置DNS服务商。请先使用 /set_dns_provider PROVIDER。"
+                )
             return
 
         try:
@@ -1809,15 +1976,18 @@ class VPSChangeIPBot:
             persist_config_value("dns_update_enabled", True)
         except Exception as e:
             logger.exception(f"启用DNS更新失败: {e}")
-            await update.message.reply_text(f"启用DNS更新失败：{redact_text(str(e))}")
+            if msg:
+                await msg.reply_text(f"启用DNS更新失败：{redact_text(str(e))}")
             return
 
-        await update.message.reply_text(f"已启用DNS更新，当前服务商: {provider}")
+        if msg:
+            await msg.reply_text(f"已启用DNS更新，当前服务商: {provider}")
 
     async def dns_update_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
             return
 
+        msg = get_effective_msg(update)
         try:
             config["dns_update_enabled"] = False
             config["huawei_dns_enabled"] = False
@@ -1825,10 +1995,12 @@ class VPSChangeIPBot:
             persist_config_value("huawei_dns_enabled", False)
         except Exception as e:
             logger.exception(f"关闭DNS更新失败: {e}")
-            await update.message.reply_text(f"关闭DNS更新失败：{redact_text(str(e))}")
+            if msg:
+                await msg.reply_text(f"关闭DNS更新失败：{redact_text(str(e))}")
             return
 
-        await update.message.reply_text("已关闭DNS更新。")
+        if msg:
+            await msg.reply_text("已关闭DNS更新。")
 
     async def ip_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -1909,12 +2081,14 @@ class VPSChangeIPBot:
         if not await check_super_admin_permission(update):
             return
 
+        msg = get_effective_msg(update)
         if context.args:
             target = context.args[0].strip().lower()
             if target == "classic":
                 target = "fachost"
             if target not in ("generic", "fachost", "boil"):
-                await update.message.reply_text("无效的模式，支持: generic (通用模式), fachost (Fachost专用), boil (Boil Network)")
+                if msg:
+                    await msg.reply_text("无效的模式，支持: generic (通用模式), fachost (Fachost专用), boil (Boil Network)")
                 return
 
             try:
@@ -1926,10 +2100,12 @@ class VPSChangeIPBot:
                     mode_desc = "Fachost 专用模式 (解析响应 JSON)"
                 else:
                     mode_desc = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
-                await update.message.reply_text(f"已切换换IP模式为: {mode_desc} ({target})")
+                if msg:
+                    await msg.reply_text(f"已切换换IP模式为: {mode_desc} ({target})")
             except Exception as e:
                 logger.exception(f"切换换IP模式失败: {e}")
-                await update.message.reply_text(f"切换换IP模式失败: {redact_text(str(e))}")
+                if msg:
+                    await msg.reply_text(f"切换换IP模式失败: {redact_text(str(e))}")
             return
 
         current = str(config.get("ip_change_provider", "generic")).strip().lower()
@@ -1955,10 +2131,11 @@ class VPSChangeIPBot:
                 )
             ],
         ]
-        await update.message.reply_text(
-            f"请选择换IP服务商模式（当前: {current}）：",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        if msg:
+            await msg.reply_text(
+                f"请选择换IP服务商模式（当前: {current}）：",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
 
     async def set_ip_mode_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -2369,6 +2546,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("setstream", set_stream_region_handler))
         self.app.add_handler(CommandHandler("ping", ping_handler))
         self.app.add_handler(CommandHandler("speedtest", speedtest_handler))
+        self.app.add_handler(CallbackQueryHandler(self.main_menu_callback, pattern="^main_menu:"))
         self.app.add_handler(CallbackQueryHandler(self.server_action_callback, pattern="^srv_act:"))
         self.app.add_handler(CallbackQueryHandler(self.set_ip_mode_callback, pattern="^set_ip_mode:"))
         self.app.add_handler(CallbackQueryHandler(self.manage_users_callback, pattern="^manage_users:"))

@@ -40,6 +40,18 @@ if isinstance(sys.modules.get("telegram"), MagicMock):
             self.description = description
     sys.modules["telegram"].BotCommand = FakeBotCommand
 
+    class FakeInlineKeyboardButton:
+        def __init__(self, text, callback_data=None, url=None):
+            self.text = text
+            self.callback_data = callback_data
+            self.url = url
+    sys.modules["telegram"].InlineKeyboardButton = FakeInlineKeyboardButton
+
+    class FakeInlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+    sys.modules["telegram"].InlineKeyboardMarkup = FakeInlineKeyboardMarkup
+
 from utils.network import (
     ChangeIPTimeoutError,
     call_boil_change_ip,
@@ -2587,6 +2599,114 @@ class TestSecurityAndSanitization(unittest.IsolatedAsyncioTestCase):
             "telegram_super_admin_user_ids": "11111",
             "telegram_admin_user_ids": "33333",
         })
+
+
+class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from config import config
+        self._orig_cfg = dict(config)
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+    def tearDown(self):
+        from config import config
+        config.clear()
+        config.update(self._orig_cfg)
+
+    def test_build_main_menu_keyboard_super_admin(self):
+        from bot import build_main_menu_keyboard
+        markup = build_main_menu_keyboard("super_admin")
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:check", callbacks)
+        self.assertIn("main_menu:change", callbacks)
+        self.assertIn("main_menu:ip_status", callbacks)
+        self.assertIn("main_menu:stream", callbacks)
+        self.assertIn("main_menu:quality", callbacks)
+        self.assertIn("main_menu:speedtest", callbacks)
+        self.assertIn("main_menu:ping", callbacks)
+        self.assertIn("main_menu:stream_region", callbacks)
+        self.assertIn("main_menu:admins", callbacks)
+        self.assertIn("main_menu:auto_status", callbacks)
+        self.assertIn("main_menu:health", callbacks)
+        self.assertIn("main_menu:set_ip_mode", callbacks)
+        self.assertIn("main_menu:dns_status", callbacks)
+        self.assertIn("main_menu:manage_users", callbacks)
+        self.assertIn("main_menu:logs", callbacks)
+        self.assertIn("main_menu:refresh", callbacks)
+
+    def test_build_main_menu_keyboard_admin(self):
+        from bot import build_main_menu_keyboard
+        markup = build_main_menu_keyboard("admin")
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:check", callbacks)
+        self.assertIn("main_menu:stream", callbacks)
+        self.assertIn("main_menu:refresh", callbacks)
+        self.assertNotIn("main_menu:set_ip_mode", callbacks)
+        self.assertNotIn("main_menu:dns_status", callbacks)
+        self.assertNotIn("main_menu:manage_users", callbacks)
+        self.assertNotIn("main_menu:logs", callbacks)
+
+    async def test_start_command_attaches_keyboard(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.callback_query = None
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+
+        await bot.start(mock_update, MagicMock())
+        mock_update.message.reply_text.assert_called_once()
+        kwargs = mock_update.message.reply_text.call_args[1]
+        self.assertIn("reply_markup", kwargs)
+        markup = kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:check", callbacks)
+
+    async def test_start_via_callback_query_edits_message(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        await bot.start(mock_update, MagicMock())
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        self.assertIn("reply_markup", kwargs)
+
+    @patch("bot.check_ip_status", new_callable=AsyncMock)
+    @patch("bot.change_ip_handler", new_callable=AsyncMock)
+    @patch("bot.stream_check_handler", new_callable=AsyncMock)
+    async def test_main_menu_callback_dispatch(self, mock_stream, mock_change, mock_check):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        bot.ip_status = AsyncMock()
+        bot.admins_handler = AsyncMock()
+        bot.auto_status = AsyncMock()
+        bot.health = AsyncMock()
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.data = "main_menu:check"
+        mock_update.callback_query.answer = AsyncMock()
+        mock_context = MagicMock()
+
+        await bot.main_menu_callback(mock_update, mock_context)
+        mock_update.callback_query.answer.assert_called_once()
+        mock_check.assert_called_once()
+
+        mock_update.callback_query.data = "main_menu:change"
+        await bot.main_menu_callback(mock_update, mock_context)
+        mock_change.assert_called_once()
+
+        mock_update.callback_query.data = "main_menu:stream"
+        await bot.main_menu_callback(mock_update, mock_context)
+        mock_stream.assert_called_once()
+
+        mock_update.callback_query.data = "main_menu:health"
+        await bot.main_menu_callback(mock_update, mock_context)
+        bot.health.assert_called_once()
 
 
 if __name__ == "__main__":
