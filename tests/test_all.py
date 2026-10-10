@@ -10,7 +10,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 # Mock external packages if not installed in current environment
-for mod in ["loguru", "telegram", "telegram.ext"]:
+for mod in [
+    "loguru",
+    "telegram",
+    "telegram.ext",
+    "huaweicloudsdkcore",
+    "huaweicloudsdkcore.auth",
+    "huaweicloudsdkcore.auth.credentials",
+    "huaweicloudsdkdns",
+    "huaweicloudsdkdns.v2",
+    "huaweicloudsdkdns.v2.region",
+    "huaweicloudsdkdns.v2.region.dns_region",
+    "huaweicloudsdkdns.v2.model",
+    "huaweicloudsdkdns.v2.model.list_public_zones_request",
+    "huaweicloudsdkdns.v2.model.list_record_sets_by_zone_request",
+    "huaweicloudsdkdns.v2.model.update_record_set_request",
+    "huaweicloudsdkdns.v2.model.update_record_set_req",
+]:
     if mod not in sys.modules:
         try:
             __import__(mod)
@@ -401,6 +417,7 @@ class TestBotHelpers(unittest.TestCase):
         tmp_yaml.write("ip_change_provider: classic\nboil_api_token: \"\"\n# comments\n")
         tmp_yaml.close()
 
+        orig_loaded_from = config.get("_loaded_from")
         try:
             config["_loaded_from"] = tmp_yaml.name
             persist_config_value("ip_change_provider", "boil")
@@ -421,6 +438,47 @@ class TestBotHelpers(unittest.TestCase):
         finally:
             if os.path.exists(tmp_yaml.name):
                 os.remove(tmp_yaml.name)
+            if orig_loaded_from is not None:
+                config["_loaded_from"] = orig_loaded_from
+            else:
+                config.pop("_loaded_from", None)
+
+    def test_persist_config_values_batch(self):
+        from bot import persist_config_values
+        from config import config
+
+        tmp_yaml = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".yaml", encoding="utf-8")
+        tmp_yaml.write("dns_provider: \"\"\ndns_update_enabled: false\ntelegram_admin_user_ids: \"\"\n")
+        tmp_yaml.close()
+
+        orig_loaded_from = config.get("_loaded_from")
+        try:
+            config["_loaded_from"] = tmp_yaml.name
+            persist_config_values({
+                "dns_provider": "cloudflare",
+                "dns_update_enabled": True,
+                "telegram_admin_user_ids": "123,456",
+            })
+
+            with open(tmp_yaml.name, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            self.assertIn('dns_provider: "cloudflare"', content)
+            self.assertIn('dns_update_enabled: true', content)
+            self.assertIn('telegram_admin_user_ids: "123,456"', content)
+
+            import yaml
+            parsed = yaml.safe_load(content)
+            self.assertEqual(parsed["dns_provider"], "cloudflare")
+            self.assertTrue(parsed["dns_update_enabled"])
+            self.assertEqual(parsed["telegram_admin_user_ids"], "123,456")
+        finally:
+            if os.path.exists(tmp_yaml.name):
+                os.remove(tmp_yaml.name)
+            if orig_loaded_from is not None:
+                config["_loaded_from"] = orig_loaded_from
+            else:
+                config.pop("_loaded_from", None)
 
 
 class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
@@ -604,8 +662,9 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         mock_persist.assert_not_called()
         self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_user_management_delete_super_admin_success_when_multiple(self, mock_persist):
+    async def test_user_management_delete_super_admin_success_when_multiple(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
 
@@ -628,7 +687,7 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         mock_update.callback_query.edit_message_text.assert_called_once()
         sent_text = mock_update.callback_query.edit_message_text.call_args[0][0]
         self.assertIn("已成功删除超级管理员: `99999`", sent_text)
-        mock_persist.assert_called_once_with("telegram_super_admin_user_ids", "11111")
+        mock_persist_vals.assert_called_once_with({"telegram_super_admin_user_ids": "11111"})
         self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
 
     @patch("bot.persist_config_value")
@@ -658,8 +717,9 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         mock_persist.assert_called_once_with("telegram_admin_user_ids", "33333")
         self.assertEqual(config["telegram_admin_user_ids"], "33333")
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_add_super_admin_and_promote_regular_admin(self, mock_persist):
+    async def test_add_super_admin_and_promote_regular_admin(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
 
@@ -708,8 +768,9 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         mock_persist.assert_not_called()
         self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_user_management_promote_callback(self, mock_persist):
+    async def test_user_management_promote_callback(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
 
@@ -738,8 +799,9 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("22222", config["telegram_admin_user_ids"])
         bot.sync_user_bot_commands.assert_called_once_with("22222", "super_admin")
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_user_management_demote_callback_success(self, mock_persist):
+    async def test_user_management_demote_callback_success(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
 
@@ -797,8 +859,9 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
         bot.sync_user_bot_commands.assert_not_called()
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_demote_admin_command(self, mock_persist):
+    async def test_demote_admin_command(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
 
@@ -1745,10 +1808,15 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
 
 class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        from config import config
+        self._orig_config = config.copy()
         from utils.user_cache import _reset_cache_for_testing
         _reset_cache_for_testing()
 
     def tearDown(self):
+        from config import config
+        config.clear()
+        config.update(self._orig_config)
         from utils.user_cache import _reset_cache_for_testing
         _reset_cache_for_testing()
 
@@ -1790,7 +1858,8 @@ class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info["u"], "alice_bot")
         self.assertEqual(info["n"], "Alice Smith")
 
-        self.assertEqual(format_user_with_id("12345678"), "`12345678` (@alice_bot)")
+        self.assertEqual(format_user_with_id("12345678"), "`12345678` (@alice\\_bot)")
+        self.assertEqual(format_user_with_id("12345678", escape_markdown=False), "`12345678` (@alice_bot)")
         self.assertEqual(format_user_with_id("88888888"), "`88888888`")
 
     @patch("utils.user_cache.save_state")
@@ -1892,7 +1961,7 @@ class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
         sent = mock_update.message.reply_text.call_args[0][0]
         self.assertIn("已成功添加普通管理员", sent)
         self.assertIn("44444", sent)
-        self.assertIn("@alice_new", sent)
+        self.assertIn("@alice\\_new", sent)
         self.assertIn("44444", config["telegram_admin_user_ids"])
         bot.sync_user_bot_commands.assert_called_once_with("44444", "admin")
 
@@ -1920,8 +1989,9 @@ class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ghost_user", config["telegram_admin_user_ids"])
         bot.sync_user_bot_commands.assert_not_called()
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_add_super_admin_with_username_success(self, mock_persist):
+    async def test_add_super_admin_with_username_success(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
         from utils.user_cache import record_known_user
@@ -1978,8 +2048,9 @@ class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("22222", config["telegram_admin_user_ids"])
         bot.sync_user_bot_commands.assert_called_once_with("22222", "")
 
+    @patch("bot.persist_config_values")
     @patch("bot.persist_config_value")
-    async def test_manage_users_add_text_with_username_and_forward(self, mock_persist):
+    async def test_manage_users_add_text_with_username_and_forward(self, mock_persist, mock_persist_vals):
         from bot import VPSChangeIPBot
         from config import config
         from utils.user_cache import record_known_user
@@ -2159,6 +2230,77 @@ class TestSecurityAndSanitization(unittest.IsolatedAsyncioTestCase):
         from utils.remote_ssh import build_ssh_command_prefix
         with self.assertRaises(ValueError):
             build_ssh_command_prefix({"host": "-oProxyCommand=calc.exe", "port": 22})
+
+    def test_huawei_dns_client_per_server_config(self):
+        from services.huawei_dns import HuaweiDNSClient
+        srv = {
+            "huawei_ak": "ak_server1",
+            "huawei_sk": "sk_server1",
+            "huawei_dns_zone_name": "example.com",
+            "huawei_dns_record_name": "sub.example.com",
+            "huawei_dns_record_type": "AAAA",
+            "huawei_dns_ttl": 120,
+        }
+        client = HuaweiDNSClient(server_config=srv)
+        self.assertEqual(client.ak, "ak_server1")
+        self.assertEqual(client.sk, "sk_server1")
+        self.assertEqual(client.record_type, "AAAA")
+        self.assertEqual(client.ttl, 120)
+
+    @patch("services.dns_update_service._request_json")
+    def test_dns_update_cloudflare_multiserver_proxied(self, mock_req):
+        from services.dns_update_service import update_dns_if_enabled
+        from config import config
+
+        srv = {
+            "dns_provider": "cloudflare",
+            "dns_update_enabled": True,
+            "dns_zone_name": "example.com",
+            "dns_record_name": "node.example.com",
+            "cloudflare_api_token": "token123",
+            "cloudflare_proxied": True,
+        }
+        mock_req.side_effect = [
+            {"result": [{"id": "zone_123"}]},  # zones
+            {"result": [{"id": "rec_456"}]},   # records
+            {"success": True},                  # PUT
+        ]
+
+        res = update_dns_if_enabled("1.2.3.4", server_config=srv)
+        self.assertIn("node.example.com -> 1.2.3.4", res)
+        # Check PUT call payload has proxied=True
+        put_call = mock_req.call_args_list[2]
+        self.assertEqual(put_call[0][0], "PUT")
+        self.assertTrue(put_call[1]["json"]["proxied"])
+
+    @patch("bot.persist_config_values")
+    @patch("bot.persist_config_value")
+    async def test_remove_admin_cleans_duplicate_admin_ids(self, mock_persist, mock_persist_vals):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111,22222"
+        config["telegram_admin_user_ids"] = "22222,33333"  # 22222 mistakenly in both lists
+
+        bot = VPSChangeIPBot()
+        bot.sync_user_bot_commands = AsyncMock()
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 11111
+        mock_update.message.reply_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = ["22222"]
+
+        await bot.remove_admin(mock_update, mock_context)
+
+        # 22222 should be removed from super admins AND cleaned from normal admins
+        self.assertNotIn("22222", config["telegram_super_admin_user_ids"])
+        self.assertNotIn("22222", config["telegram_admin_user_ids"])
+        self.assertIn("33333", config["telegram_admin_user_ids"])
+        mock_persist_vals.assert_called_once_with({
+            "telegram_super_admin_user_ids": "11111",
+            "telegram_admin_user_ids": "33333",
+        })
 
 
 if __name__ == "__main__":

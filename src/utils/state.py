@@ -58,29 +58,30 @@ def _ensure_parent() -> None:
 
 
 def load_state() -> Dict[str, Any]:
-    state_file = _state_file()
-    if not os.path.exists(state_file):
-        return _default_state()
-    try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        state = _default_state()
-        state.update(data)
-        if "servers" not in state or not isinstance(state["servers"], dict):
-            state["servers"] = {}
-        if "default" not in state["servers"]:
-            default_entry = _default_server_state()
-            for k in default_entry:
-                if k in state:
-                    default_entry[k] = state[k]
-            state["servers"]["default"] = default_entry
-        if "user_active_servers" not in state or not isinstance(state["user_active_servers"], dict):
-            state["user_active_servers"] = {}
-        if "known_users" not in state or not isinstance(state["known_users"], dict):
-            state["known_users"] = {}
-        return state
-    except Exception:
-        return _default_state()
+    with _STATE_FILE_LOCK:
+        state_file = _state_file()
+        if not os.path.exists(state_file):
+            return _default_state()
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            state = _default_state()
+            state.update(data)
+            if "servers" not in state or not isinstance(state["servers"], dict):
+                state["servers"] = {}
+            if "default" not in state["servers"]:
+                default_entry = _default_server_state()
+                for k in default_entry:
+                    if k in state:
+                        default_entry[k] = state[k]
+                state["servers"]["default"] = default_entry
+            if "user_active_servers" not in state or not isinstance(state["user_active_servers"], dict):
+                state["user_active_servers"] = {}
+            if "known_users" not in state or not isinstance(state["known_users"], dict):
+                state["known_users"] = {}
+            return state
+        except Exception:
+            return _default_state()
 
 
 def save_state(data: Dict[str, Any]) -> None:

@@ -258,14 +258,17 @@ def parse_and_resolve_user_id(raw_input: str) -> Tuple[Optional[str], Optional[s
     )
 
 
-def format_user_with_id(user_id: int | str) -> str:
-    """格式化展示用户 ID 及其已知的 @username"""
+def format_user_with_id(user_id: int | str, escape_markdown: bool = True) -> str:
+    """格式化展示用户 ID 及其已知的 @username，默认对 Telegram Markdown 特殊字符（如 _）进行转义以防止解析失败"""
     uid = str(user_id or "").strip()
     if not uid:
         return ""
     info = get_known_user(uid)
     if info and info.get("u"):
-        return f"`{uid}` (@{info['u']})"
+        u = str(info["u"])
+        if escape_markdown:
+            u = u.replace("_", "\\_")
+        return f"`{uid}` (@{u})"
     return f"`{uid}`"
 
 

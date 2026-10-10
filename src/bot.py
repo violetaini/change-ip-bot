@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import re
 import urllib.parse
@@ -150,51 +151,65 @@ def _get_admin_id_list() -> list[str]:
     return res
 
 
-def persist_config_value(key: str, value) -> None:
+_CONFIG_FILE_LOCK = threading.RLock()
+
+
+def persist_config_values(updates: Dict[str, Any]) -> None:
+    if not updates:
+        return
+
     config_path = config.get("_loaded_from")
     if not config_path:
         raise RuntimeError("无法确定当前配置文件路径")
 
     path = Path(str(config_path))
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if isinstance(value, bool):
-        rendered = "true" if value else "false"
-    elif isinstance(value, (int, float)):
-        rendered = str(value)
-    elif value is None:
-        rendered = '""'
-    else:
-        val_str = str(value).strip()
-        if (val_str.startswith('"') and val_str.endswith('"')) or (val_str.startswith("'") and val_str.endswith("'")):
-            rendered = val_str
-        else:
-            rendered = f'"{val_str}"'
+    with _CONFIG_FILE_LOCK:
+        lines = path.read_text(encoding="utf-8").splitlines()
 
-    prefix = f"{key}:"
-    found = False
-    for idx, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(prefix) and not stripped.startswith("#"):
-            indent = line[: len(line) - len(line.lstrip())]
-            # 严格匹配顶级配置项，避免误修改 servers 节点块内部同名子配置
-            if not indent:
-                lines[idx] = f"{key}: {rendered}"
-                found = True
-                break
-    if not found:
-        lines.append(f"{key}: {rendered}")
+        for key, value in updates.items():
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                rendered = str(value)
+            elif value is None:
+                rendered = '""'
+            else:
+                val_str = str(value).strip()
+                if (val_str.startswith('"') and val_str.endswith('"')) or (val_str.startswith("'") and val_str.endswith("'")):
+                    rendered = val_str
+                else:
+                    escaped = val_str.replace('\\', '\\\\').replace('"', '\\"')
+                    rendered = f'"{escaped}"'
 
-    temp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.perf_counter_ns()}")
-    try:
-        temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        temp_path.replace(path)
-    except Exception:
-        if temp_path.exists():
-            try:
-                temp_path.unlink()
-            except Exception:
-                pass
-        raise
+            prefix = f"{key}:"
+            found = False
+            for idx, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith(prefix) and not stripped.startswith("#"):
+                    indent = line[: len(line) - len(line.lstrip())]
+                    # 严格匹配顶级配置项，避免误修改 servers 节点块内部同名子配置
+                    if not indent:
+                        lines[idx] = f"{key}: {rendered}"
+                        found = True
+                        break
+            if not found:
+                lines.append(f"{key}: {rendered}")
+
+        temp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.perf_counter_ns()}")
+        try:
+            temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            temp_path.replace(path)
+        except Exception:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+            raise
+
+
+def persist_config_value(key: str, value) -> None:
+    persist_config_values({key: value})
 
 
 def parse_auto_change_time(raw_val: Optional[str] = None) -> datetime_time:
@@ -879,8 +894,8 @@ class VPSChangeIPBot:
         super_admins = _get_super_admin_id_list()
         normal_admins = _get_admin_id_list()
 
-        super_admin_display = "\n".join([f"  • `{uid}` (系统级保护)" for uid in super_admins]) if super_admins else "  • 暂未配置"
-        normal_admin_display = "\n".join([f"  • `{uid}`" for uid in normal_admins]) if normal_admins else "  • 暂无普通管理员"
+        super_admin_display = "\n".join([f"  • {format_user_with_id(uid)} (系统级保护)" for uid in super_admins]) if super_admins else "  • 暂未配置"
+        normal_admin_display = "\n".join([f"  • {format_user_with_id(uid)}" for uid in normal_admins]) if normal_admins else "  • 暂无普通管理员"
 
         text = (
             "👥 *【管理员权限与架构看板】*\n\n"
@@ -889,7 +904,7 @@ class VPSChangeIPBot:
             f"👤 *普通管理员列表*（动态可管理）：\n"
             f"{normal_admin_display}\n\n"
             f"🏷️ *您的身份*：\n"
-            f"  • Telegram ID: `{current_uid}`\n"
+            f"  • Telegram ID: {format_user_with_id(current_uid)}\n"
             f"  • 当前角色: *{role_label}*\n\n"
             "🛡️ *权限隔离与防越权划分*：\n"
             "• *超级管理员独占*：节点切换/增删、IP换取模式配置、Boil Token/换IP API设置、DNS解析管理、定时任务启停、系统日志审计、管理员用户管理。\n"
@@ -970,14 +985,15 @@ class VPSChangeIPBot:
 
         super_admin_ids.append(new_id)
         rendered_super = ",".join(super_admin_ids)
+        updates = {"telegram_super_admin_user_ids": rendered_super}
+        config["telegram_super_admin_user_ids"] = rendered_super
+        if new_id in admin_ids:
+            admin_ids = [x for x in admin_ids if x != new_id]
+            rendered_admin = ",".join(admin_ids)
+            config["telegram_admin_user_ids"] = rendered_admin
+            updates["telegram_admin_user_ids"] = rendered_admin
         try:
-            config["telegram_super_admin_user_ids"] = rendered_super
-            persist_config_value("telegram_super_admin_user_ids", rendered_super)
-            if new_id in admin_ids:
-                admin_ids = [x for x in admin_ids if x != new_id]
-                rendered_admin = ",".join(admin_ids)
-                config["telegram_admin_user_ids"] = rendered_admin
-                persist_config_value("telegram_admin_user_ids", rendered_admin)
+            persist_config_values(updates)
         except Exception as e:
             logger.exception(f"添加超级管理员失败: {e}")
             await update.message.reply_text(f"添加超级管理员失败：{redact_text(str(e))}")
@@ -1021,9 +1037,11 @@ class VPSChangeIPBot:
         rendered_admin = ",".join(admin_ids)
         try:
             config["telegram_super_admin_user_ids"] = rendered_super
-            persist_config_value("telegram_super_admin_user_ids", rendered_super)
             config["telegram_admin_user_ids"] = rendered_admin
-            persist_config_value("telegram_admin_user_ids", rendered_admin)
+            persist_config_values({
+                "telegram_super_admin_user_ids": rendered_super,
+                "telegram_admin_user_ids": rendered_admin,
+            })
         except Exception as e:
             logger.exception(f"降级超级管理员失败: {e}")
             await update.message.reply_text(f"降级超级管理员失败：{redact_text(str(e))}")
@@ -1258,9 +1276,16 @@ class VPSChangeIPBot:
 
                 super_admin_ids = [x for x in super_admin_ids if x != admin_id]
                 rendered = ",".join(super_admin_ids)
+                updates = {"telegram_super_admin_user_ids": rendered}
+                config["telegram_super_admin_user_ids"] = rendered
+                raw_admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids") or "").split(",") if x.strip()]
+                if admin_id in raw_admin_ids:
+                    raw_admin_ids = [x for x in raw_admin_ids if x != admin_id]
+                    rendered_admin = ",".join(raw_admin_ids)
+                    config["telegram_admin_user_ids"] = rendered_admin
+                    updates["telegram_admin_user_ids"] = rendered_admin
                 try:
-                    config["telegram_super_admin_user_ids"] = rendered
-                    persist_config_value("telegram_super_admin_user_ids", rendered)
+                    persist_config_values(updates)
                 except Exception as e:
                     logger.exception(f"删除超级管理员失败: {e}")
                     await query.edit_message_text(f"删除超级管理员失败：{redact_text(str(e))}")
@@ -1269,8 +1294,9 @@ class VPSChangeIPBot:
                 await self.sync_user_bot_commands(admin_id, "")
                 context.user_data.pop("selected_admin_id", None)
                 self._user_management_selected_admin_id = ""
+                target_disp = format_user_with_id(admin_id)
                 await query.edit_message_text(
-                    self.user_management_text(update, notice=f"✅ 已成功删除超级管理员: `{admin_id}`"),
+                    self.user_management_text(update, notice=f"✅ 已成功删除超级管理员: {target_disp}"),
                     parse_mode="Markdown",
                     reply_markup=self.user_management_keyboard("已删除超级管理员"),
                 )
@@ -1290,8 +1316,9 @@ class VPSChangeIPBot:
                 await self.sync_user_bot_commands(admin_id, "")
                 context.user_data.pop("selected_admin_id", None)
                 self._user_management_selected_admin_id = ""
+                target_disp = format_user_with_id(admin_id)
                 await query.edit_message_text(
-                    self.user_management_text(update, notice=f"✅ 已成功删除普通管理员: `{admin_id}`"),
+                    self.user_management_text(update, notice=f"✅ 已成功删除普通管理员: {target_disp}"),
                     parse_mode="Markdown",
                     reply_markup=self.user_management_keyboard("已删除普通管理员"),
                 )
@@ -1299,8 +1326,9 @@ class VPSChangeIPBot:
 
             context.user_data.pop("selected_admin_id", None)
             self._user_management_selected_admin_id = ""
+            target_disp = format_user_with_id(admin_id)
             await query.edit_message_text(
-                self.user_management_text(update, notice=f"目标管理员已不在列表中: `{admin_id}`"),
+                self.user_management_text(update, notice=f"目标管理员已不在列表中: {target_disp}"),
                 parse_mode="Markdown",
                 reply_markup=self.user_management_keyboard("目标不在列表中"),
             )
@@ -1317,9 +1345,11 @@ class VPSChangeIPBot:
                 rendered_admin = ",".join(admin_ids)
                 try:
                     config["telegram_super_admin_user_ids"] = rendered_super
-                    persist_config_value("telegram_super_admin_user_ids", rendered_super)
                     config["telegram_admin_user_ids"] = rendered_admin
-                    persist_config_value("telegram_admin_user_ids", rendered_admin)
+                    persist_config_values({
+                        "telegram_super_admin_user_ids": rendered_super,
+                        "telegram_admin_user_ids": rendered_admin,
+                    })
                 except Exception as e:
                     logger.exception(f"升级超级管理员失败: {e}")
                     await query.edit_message_text(f"升级超级管理员失败：{redact_text(str(e))}")
@@ -1327,10 +1357,11 @@ class VPSChangeIPBot:
 
                 await self.sync_user_bot_commands(target_id, "super_admin")
 
+            target_disp = format_user_with_id(target_id)
             context.user_data["selected_admin_id"] = target_id
             self._user_management_selected_admin_id = target_id
             await query.edit_message_text(
-                self.user_management_text(update, notice=f"👑 已成功将用户 `{target_id}` 升为超级管理员，并已实时更新其全量命令菜单！"),
+                self.user_management_text(update, notice=f"👑 已成功将用户 {target_disp} 升为超级管理员，并已实时更新其全量命令菜单！"),
                 parse_mode="Markdown",
                 reply_markup=self.user_management_keyboard("已转为超级管理员"),
             )
@@ -1356,9 +1387,11 @@ class VPSChangeIPBot:
                 rendered_admin = ",".join(admin_ids)
                 try:
                     config["telegram_super_admin_user_ids"] = rendered_super
-                    persist_config_value("telegram_super_admin_user_ids", rendered_super)
                     config["telegram_admin_user_ids"] = rendered_admin
-                    persist_config_value("telegram_admin_user_ids", rendered_admin)
+                    persist_config_values({
+                        "telegram_super_admin_user_ids": rendered_super,
+                        "telegram_admin_user_ids": rendered_admin,
+                    })
                 except Exception as e:
                     logger.exception(f"降级超级管理员失败: {e}")
                     await query.edit_message_text(f"降级超级管理员失败：{redact_text(str(e))}")
@@ -1366,10 +1399,11 @@ class VPSChangeIPBot:
 
                 await self.sync_user_bot_commands(target_id, "admin")
 
+            target_disp = format_user_with_id(target_id)
             context.user_data["selected_admin_id"] = target_id
             self._user_management_selected_admin_id = target_id
             await query.edit_message_text(
-                self.user_management_text(update, notice=f"👤 已成功将超级管理员 `{target_id}` 降为普通管理员，并已实时剪裁其命令菜单！"),
+                self.user_management_text(update, notice=f"👤 已成功将超级管理员 {target_disp} 降为普通管理员，并已实时剪裁其命令菜单！"),
                 parse_mode="Markdown",
                 reply_markup=self.user_management_keyboard("已转为普通管理员"),
             )
@@ -1395,9 +1429,16 @@ class VPSChangeIPBot:
                     return
                 super_admin_ids = [x for x in super_admin_ids if x != target_id]
                 rendered = ",".join(super_admin_ids)
+                updates = {"telegram_super_admin_user_ids": rendered}
+                config["telegram_super_admin_user_ids"] = rendered
+                raw_admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids") or "").split(",") if x.strip()]
+                if target_id in raw_admin_ids:
+                    raw_admin_ids = [x for x in raw_admin_ids if x != target_id]
+                    rendered_admin = ",".join(raw_admin_ids)
+                    config["telegram_admin_user_ids"] = rendered_admin
+                    updates["telegram_admin_user_ids"] = rendered_admin
                 try:
-                    config["telegram_super_admin_user_ids"] = rendered
-                    persist_config_value("telegram_super_admin_user_ids", rendered)
+                    persist_config_values(updates)
                 except Exception as e:
                     await update.message.reply_text(f"删除失败：{redact_text(str(e))}")
                     return
@@ -1458,15 +1499,23 @@ class VPSChangeIPBot:
                 return
             super_admin_ids = [x for x in super_admin_ids if x != target_id]
             rendered = ",".join(super_admin_ids)
+            updates = {"telegram_super_admin_user_ids": rendered}
+            config["telegram_super_admin_user_ids"] = rendered
+            raw_admin_ids = [x.strip() for x in str(config.get("telegram_admin_user_ids") or "").split(",") if x.strip()]
+            if target_id in raw_admin_ids:
+                raw_admin_ids = [x for x in raw_admin_ids if x != target_id]
+                rendered_admin = ",".join(raw_admin_ids)
+                config["telegram_admin_user_ids"] = rendered_admin
+                updates["telegram_admin_user_ids"] = rendered_admin
             try:
-                config["telegram_super_admin_user_ids"] = rendered
-                persist_config_value("telegram_super_admin_user_ids", rendered)
+                persist_config_values(updates)
             except Exception as e:
                 logger.exception(f"删除超级管理员失败: {e}")
                 await query.edit_message_text(f"删除超级管理员失败：{redact_text(str(e))}")
                 return
             await self.sync_user_bot_commands(target_id, "")
-            await query.edit_message_text(f"✅ 已成功删除超级管理员: `{target_id}`", parse_mode="Markdown")
+            target_disp = format_user_with_id(target_id)
+            await query.edit_message_text(f"✅ 已成功删除超级管理员: {target_disp}", parse_mode="Markdown")
             return
 
         if target_id in admin_ids:
@@ -1539,14 +1588,15 @@ class VPSChangeIPBot:
 
             super_admin_ids.append(new_admin_id)
             rendered_super = ",".join(super_admin_ids)
+            updates = {"telegram_super_admin_user_ids": rendered_super}
+            config["telegram_super_admin_user_ids"] = rendered_super
+            if new_admin_id in admin_ids:
+                admin_ids = [x for x in admin_ids if x != new_admin_id]
+                rendered_admin = ",".join(admin_ids)
+                config["telegram_admin_user_ids"] = rendered_admin
+                updates["telegram_admin_user_ids"] = rendered_admin
             try:
-                config["telegram_super_admin_user_ids"] = rendered_super
-                persist_config_value("telegram_super_admin_user_ids", rendered_super)
-                if new_admin_id in admin_ids:
-                    admin_ids = [x for x in admin_ids if x != new_admin_id]
-                    rendered_admin = ",".join(admin_ids)
-                    config["telegram_admin_user_ids"] = rendered_admin
-                    persist_config_value("telegram_admin_user_ids", rendered_admin)
+                persist_config_values(updates)
             except Exception as e:
                 logger.exception(f"添加超级管理员失败: {e}")
                 await update.message.reply_text(f"添加超级管理员失败：{redact_text(str(e))}")
@@ -1662,8 +1712,7 @@ class VPSChangeIPBot:
         try:
             config["dns_provider"] = provider
             config["dns_update_enabled"] = True
-            persist_config_value("dns_provider", provider)
-            persist_config_value("dns_update_enabled", True)
+            persist_config_values({"dns_provider": provider, "dns_update_enabled": True})
         except Exception as e:
             logger.exception(f"设置DNS服务商失败: {e}")
             await update.message.reply_text(f"设置DNS服务商失败：{redact_text(str(e))}")
@@ -1722,7 +1771,7 @@ class VPSChangeIPBot:
             }
             for key, value in updates.items():
                 config[key] = value
-                persist_config_value(key, value)
+            persist_config_values(updates)
         except Exception as e:
             logger.exception(f"设置DNS解析记录失败: {e}")
             await update.message.reply_text(f"设置DNS解析记录失败：{redact_text(str(e))}")
@@ -1988,8 +2037,8 @@ class VPSChangeIPBot:
 
         lines = [f"🌐【服务器节点看板】(共 {len(servers)} 个节点)\n"]
         for idx, s in enumerate(servers, 1):
-            sid = s.get("id", "default")
-            sname = s.get("name") or sid
+            sid = str(s.get("id", "default")).replace("`", "")
+            sname = str(s.get("name") or sid).replace("_", "\\_").replace("*", "\\*").replace("`", "")
             provider = str(s.get("ip_change_provider") or "generic").strip().lower()
             if provider == "boil":
                 mode_str = "Boil Network 住宅模式"
@@ -1999,11 +2048,11 @@ class VPSChangeIPBot:
                 mode_str = "通用 API 模式"
 
             ssh_enabled = bool(s.get("remote_ssh_enabled"))
-            ssh_host = str(s.get("remote_ssh_host") or "").strip()
+            ssh_host = str(s.get("remote_ssh_host") or "").strip().replace("_", "\\_").replace("*", "\\*")
             ssh_str = f"已启用 ({ssh_host})" if ssh_enabled else "未启用 (本地机房)"
 
             dns_on = bool(s.get("dns_update_enabled"))
-            dns_rec = str(s.get("dns_record_name") or s.get("huawei_dns_record_name", "")).strip()
+            dns_rec = str(s.get("dns_record_name") or s.get("huawei_dns_record_name", "")).strip().replace("_", "\\_").replace("*", "\\*")
             dns_str = f"已启用 ({dns_rec})" if (dns_on and dns_rec) else "未启用"
 
             s_state = load_server_state(sid)
@@ -2060,10 +2109,13 @@ class VPSChangeIPBot:
             matched = get_server_config(target)
             if not matched:
                 avail = ", ".join([f"`{s['id']}`" for s in servers])
-                await msg.reply_text(f"❌ 未找到 ID 为 `{target}` 的服务器。\n可用服务器 ID: {avail}", parse_mode="Markdown")
+                target_clean = str(target).replace("`", "")
+                await msg.reply_text(f"❌ 未找到 ID 为 `{target_clean}` 的服务器。\n可用服务器 ID: {avail}", parse_mode="Markdown")
                 return
             set_user_selected_server(user_id, matched["id"])
-            await msg.reply_text(f"✅ 已将当前默认操作服务器切换为: 【{matched.get('name', matched['id'])}】 (`{matched['id']}`)", parse_mode="Markdown")
+            matched_sname = str(matched.get("name", matched["id"])).replace("_", "\\_").replace("*", "\\*")
+            matched_sid = str(matched["id"]).replace("`", "")
+            await msg.reply_text(f"✅ 已将当前默认操作服务器切换为: 【{matched_sname}】 (`{matched_sid}`)", parse_mode="Markdown")
             return
 
         keyboard = []
@@ -2105,8 +2157,9 @@ class VPSChangeIPBot:
             matched = get_server_config(target)
             if matched:
                 set_user_selected_server(user_id, matched["id"])
-                sname = matched.get("name", matched["id"])
-                await query.edit_message_text(f"✅ 已将默认操作服务器切换为: 【{sname}】 (`{matched['id']}`)", parse_mode="Markdown")
+                matched_sname = str(matched.get("name", matched["id"])).replace("_", "\\_").replace("*", "\\*")
+                matched_sid = str(matched["id"]).replace("`", "")
+                await query.edit_message_text(f"✅ 已将默认操作服务器切换为: 【{matched_sname}】 (`{matched_sid}`)", parse_mode="Markdown")
             else:
                 await query.edit_message_text(f"❌ 切换失败，未找到节点: {target}")
             return

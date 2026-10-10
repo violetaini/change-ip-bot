@@ -284,7 +284,7 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     auto_input = str(cfg.get("stream_check_input", "2")).strip()
     if context.args:
         first_arg = str(context.args[0]).strip()
-        if first_arg in REGION_NAMES or first_arg.isdigit():
+        if first_arg in REGION_NAMES or (first_arg.isdigit() and len(first_arg) <= 2):
             auto_input = first_arg
 
     region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
@@ -303,7 +303,11 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         stream_cmd = str(cfg.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()
-        timeout = int(cfg.get("stream_check_timeout", 1200))
+        try:
+            raw_timeout = int(cfg.get("stream_check_timeout", 1200))
+        except (ValueError, TypeError):
+            raw_timeout = 1200
+        timeout = max(30, min(raw_timeout, 3600))
         return_code, output, elapsed = await asyncio.to_thread(
             run_stream_command,
             stream_cmd,

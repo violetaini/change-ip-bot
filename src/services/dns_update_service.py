@@ -107,7 +107,7 @@ def _request_json(method: str, url: str, **kwargs):
 def _update_cloudflare(new_ip: str) -> str:
     zone_name, record_name, record_type, ttl = _record_config()
     token = _text("cloudflare_api_token")
-    proxied = bool(config.get("cloudflare_proxied", False))
+    proxied = bool(_cfg("cloudflare_proxied", False))
     _require_config("Cloudflare", {
         "dns_zone_name": zone_name,
         "dns_record_name": record_name,
@@ -170,7 +170,7 @@ def _aliyun_request(params: dict[str, str]):
         "Version": "2015-01-09",
         "AccessKeyId": access_key,
         "SignatureMethod": "HMAC-SHA1",
-        "Timestamp": dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "Timestamp": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "SignatureVersion": "1.0",
         "SignatureNonce": str(uuid.uuid4()),
     }
@@ -384,14 +384,14 @@ def update_dns_if_enabled(new_ip: str, server_config: Optional[Dict[str, Any]] =
     token = _CURRENT_SERVER_CFG.set(server_config) if server_config is not None else None
     try:
         if bool(_cfg("huawei_dns_enabled")) and not _text("dns_provider"):
-            return update_huawei_dns_if_enabled(new_ip)
+            return update_huawei_dns_if_enabled(new_ip, server_config=server_config)
 
         if not bool(_cfg("dns_update_enabled")):
             return "未启用DNS更新"
 
         provider = get_dns_provider_name()
         if provider == "huawei":
-            return HuaweiDNSClient().update_record(new_ip)
+            return HuaweiDNSClient(server_config=server_config).update_record(new_ip)
 
         update_func = PROVIDERS.get(provider)
         if not update_func:

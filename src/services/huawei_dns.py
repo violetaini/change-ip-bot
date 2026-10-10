@@ -10,14 +10,18 @@ from huaweicloudsdkdns.v2.model.update_record_set_request import UpdateRecordSet
 from huaweicloudsdkdns.v2.model.update_record_set_req import UpdateRecordSetReq
 
 
+from typing import Any, Dict, Optional
+
+
 class HuaweiDNSClient:
-    def __init__(self):
-        self.ak = str(config.get("huawei_ak", "")).strip()
-        self.sk = str(config.get("huawei_sk", "")).strip()
-        self.zone_name = str(config.get("dns_zone_name") or config.get("huawei_dns_zone_name", "")).strip()
-        self.record_name = str(config.get("dns_record_name") or config.get("huawei_dns_record_name", "")).strip()
-        self.record_type = str(config.get("dns_record_type") or config.get("huawei_dns_record_type", "A")).strip().upper()
-        self.ttl = int(config.get("dns_ttl") or config.get("huawei_dns_ttl", 60))
+    def __init__(self, server_config: Optional[Dict[str, Any]] = None):
+        cfg = server_config if server_config is not None else config
+        self.ak = str(cfg.get("huawei_ak", "")).strip()
+        self.sk = str(cfg.get("huawei_sk", "")).strip()
+        self.zone_name = str(cfg.get("dns_zone_name") or cfg.get("huawei_dns_zone_name", "")).strip()
+        self.record_name = str(cfg.get("dns_record_name") or cfg.get("huawei_dns_record_name", "")).strip()
+        self.record_type = str(cfg.get("dns_record_type") or cfg.get("huawei_dns_record_type", "A")).strip().upper()
+        self.ttl = int(cfg.get("dns_ttl") or cfg.get("huawei_dns_ttl", 60))
 
     def validate_config(self):
         missing = []
@@ -85,9 +89,10 @@ class HuaweiDNSClient:
         return f"{self.record_name} -> {new_ip}"
 
 
-def update_huawei_dns_if_enabled(new_ip: str) -> str:
-    if not config.get("huawei_dns_enabled"):
+def update_huawei_dns_if_enabled(new_ip: str, server_config: Optional[Dict[str, Any]] = None) -> str:
+    cfg = server_config if server_config is not None else config
+    if not cfg.get("huawei_dns_enabled"):
         return "未启用华为云DNS更新"
 
-    client = HuaweiDNSClient()
+    client = HuaweiDNSClient(server_config=cfg)
     return client.update_record(new_ip)
