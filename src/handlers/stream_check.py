@@ -586,8 +586,20 @@ async def set_stream_region_handler(update: Update, context: ContextTypes.DEFAUL
         [
             InlineKeyboardButton("🔄 恢复为【API 自动探测】模式", callback_data="set_stream_reg:auto"),
         ],
+        [
+            InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+        ],
     ]
 
+    query = getattr(update, "callback_query", None)
+    if query and query.message:
+        try:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                return
+            logger.warning(f"edit_message_text 失败: {e}")
     await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -607,10 +619,16 @@ async def set_stream_region_callback(update: Update, context: ContextTypes.DEFAU
         return
 
     reply_text = apply_stream_region_setting(norm_val)
+    res_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📍 重新设置区域", callback_data="main_menu:stream_region"),
+            InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+        ]
+    ])
     try:
-        await query.edit_message_text(reply_text)
+        await query.edit_message_text(reply_text, reply_markup=res_keyboard)
     except Exception:
-        await query.message.reply_text(reply_text)
+        await query.message.reply_text(reply_text, reply_markup=res_keyboard)
 
 
 async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -763,8 +781,13 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             timeout,
             server_cfg,
         )
-        logger.info(f"【{sname}】流媒体检测命令返回码: {return_code}，输出长度: {len(output or '')}")
-        await msg.reply_text(prefix + build_stream_summary(return_code, output, elapsed))
+        stream_back_markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎬 重新检测流媒体", callback_data="main_menu:stream"),
+                InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+            ]
+        ])
+        await msg.reply_text(prefix + build_stream_summary(return_code, output, elapsed), reply_markup=stream_back_markup)
     except subprocess.TimeoutExpired:
         await msg.reply_text(f"{prefix}流媒体检测超时，请稍后再试。")
     except Exception as e:

@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any, Dict, Optional
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import config, get_servers, is_multi_server_mode
@@ -189,17 +189,32 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    status_msg = await msg.reply_text(text="正在检查IP与境内连通性...")
+    query = getattr(update, "callback_query", None)
+    if query and query.message:
+        try:
+            await query.edit_message_text(text="正在检查IP与境内连通性...")
+            status_msg = query.message
+        except Exception:
+            status_msg = await msg.reply_text(text="正在检查IP与境内连通性...")
+    else:
+        status_msg = await msg.reply_text(text="正在检查IP与境内连通性...")
+
+    check_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 重新检查", callback_data="main_menu:check"),
+            InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+        ]
+    ])
 
     if is_all:
         servers = get_servers()
         tasks = [do_check_single_server(s) for s in servers]
         results = await asyncio.gather(*tasks)
         final_text = "🌐【所有服务器 IP 状态总览】\n\n" + "\n\n".join(results)
-        await status_msg.edit_text(text=final_text)
+        await status_msg.edit_text(text=final_text, reply_markup=check_keyboard)
     else:
         result = await do_check_single_server(server_cfg)
         hint = ""
         if is_multi_server_mode():
             hint = f"\n\n💡 提示: 当前操作服务器为 [{server_cfg.get('name', server_cfg.get('id'))}]，输入 /servers 查看列表，/use 切换"
-        await status_msg.edit_text(text=result + hint)
+        await status_msg.edit_text(text=result + hint, reply_markup=check_keyboard)

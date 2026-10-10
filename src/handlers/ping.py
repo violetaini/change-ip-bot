@@ -5,7 +5,7 @@ import re
 import subprocess
 from typing import Tuple
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import config, is_multi_server_mode
@@ -197,18 +197,31 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if warning:
         await msg.reply_text(warning)
 
+    query = getattr(update, "callback_query", None)
     try:
         from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
         prefix = f"【{sname}】" if is_multi_server_mode() else ""
         if is_remote_ssh_enabled(server_cfg):
             ssh_cfg = get_ssh_config(server_config=server_cfg)
-            await msg.reply_text(
-                f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
-            )
+            ping_notice = f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
+            if query and query.message:
+                try:
+                    await query.edit_message_text(ping_notice)
+                except Exception:
+                    await msg.reply_text(ping_notice)
+            else:
+                await msg.reply_text(ping_notice)
             ping_cmd_str = f"ping -{ip_version} -c {count} {target}"
             code, output = await asyncio.to_thread(run_remote_ssh_command, ping_cmd_str, timeout=300, server_config=server_cfg)
         else:
-            await msg.reply_text(f"正在{prefix}ping {target} (IPv{ip_version}, {count} 次)...")
+            ping_notice = f"正在{prefix}ping {target} (IPv{ip_version}, {count} 次)..."
+            if query and query.message:
+                try:
+                    await query.edit_message_text(ping_notice)
+                except Exception:
+                    await msg.reply_text(ping_notice)
+            else:
+                await msg.reply_text(ping_notice)
             ping_cmd = (
                 ["ping", f"-{ip_version}", "-n", str(count), target]
                 if os.name == "nt"
@@ -225,9 +238,33 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         prefix = f"【{sname}】" if is_multi_server_mode() else ""
         message = prefix + format_ping_result(target, ip_version, output)
-        await msg.reply_text(message)
+        ping_back_markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🏓 再次Ping", callback_data="main_menu:ping"),
+                InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+            ]
+        ])
+        if query and query.message:
+            try:
+                await query.edit_message_text(message, reply_markup=ping_back_markup)
+            except Exception:
+                await msg.reply_text(message, reply_markup=ping_back_markup)
+        else:
+            await msg.reply_text(message, reply_markup=ping_back_markup)
     except subprocess.TimeoutExpired:
-        await msg.reply_text("Ping 超时")
+        if query and query.message:
+            try:
+                await query.edit_message_text("Ping 超时", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+            except Exception:
+                await msg.reply_text("Ping 超时", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+        else:
+            await msg.reply_text("Ping 超时")
     except Exception as e:
-        await msg.reply_text(f"执行 ping 时出错: {str(e)}")
+        if query and query.message:
+            try:
+                await query.edit_message_text(f"执行 ping 时出错: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+            except Exception:
+                await msg.reply_text(f"执行 ping 时出错: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+        else:
+            await msg.reply_text(f"执行 ping 时出错: {str(e)}")
 

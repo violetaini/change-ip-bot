@@ -263,6 +263,41 @@ def get_effective_msg(update: Update):
     return getattr(update, "message", None) or (update.callback_query.message if getattr(update, "callback_query", None) else None) or getattr(update, "effective_message", None)
 
 
+BACK_TO_MENU_BTN = InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")
+
+
+async def send_or_edit_message(
+    update: Update,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: Optional[str] = None,
+):
+    query = getattr(update, "callback_query", None)
+    has_message = getattr(update, "message", None) is not None
+    is_callback = query is not None and (
+        not has_message or (hasattr(query, "data") and isinstance(query.data, str))
+    )
+    if is_callback and getattr(query, "message", None):
+        try:
+            return await query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                return query.message
+            logger.warning(f"edit_message_text 失败，降级为 reply_text: {e}")
+    msg = get_effective_msg(update)
+    if msg:
+        return await msg.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+    return None
+
+
 def build_main_menu_keyboard(role: str) -> InlineKeyboardMarkup:
     keyboard = []
     # Row 1: 核心 IP 运维
@@ -418,12 +453,13 @@ class VPSChangeIPBot:
             ]
             sections.append("\n".join(super_ops))
 
-        msg = get_effective_msg(update)
-        if msg:
-            await msg.reply_text(
-                "\n\n".join(sections),
-                parse_mode="Markdown",
-            )
+        reply_markup = InlineKeyboardMarkup([[BACK_TO_MENU_BTN]])
+        await send_or_edit_message(
+            update,
+            "\n\n".join(sections),
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
+        )
 
     async def main_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -466,8 +502,12 @@ class VPSChangeIPBot:
             await self.auto_status(update, context)
         elif action == "auto_start":
             await self.auto_start(update, context)
+            if query:
+                await self.auto_status(update, context)
         elif action == "auto_stop":
             await self.auto_stop(update, context)
+            if query:
+                await self.auto_status(update, context)
         elif action == "health":
             await self.health(update, context)
         elif action == "set_ip_mode":
@@ -476,8 +516,12 @@ class VPSChangeIPBot:
             await self.dns_status(update, context)
         elif action == "dns_on":
             await self.dns_update_on(update, context)
+            if query:
+                await self.dns_status(update, context)
         elif action == "dns_off":
             await self.dns_update_off(update, context)
+            if query:
+                await self.dns_status(update, context)
         elif action == "manage_users":
             await self.manage_users(update, context)
         elif action == "logs":
@@ -902,22 +946,22 @@ class VPSChangeIPBot:
             return
 
         msg = get_effective_msg(update)
+        query = getattr(update, "callback_query", None)
         try:
             config["auto_change_enabled"] = True
             persist_config_value("auto_change_enabled", True)
             scheduled = self.schedule_auto_change_job()
         except Exception as e:
             logger.exception(f"启用自动换IP失败: {e}")
-            if msg:
+            if not query and msg:
                 await msg.reply_text(f"启用自动换IP失败：{redact_text(str(e))}")
             return
 
-        if scheduled:
-            run_time = parse_auto_change_time()
-            if msg:
+        if not query and msg:
+            if scheduled:
+                run_time = parse_auto_change_time()
                 await msg.reply_text(f"已启用自动换IP，每天北京时间 {run_time.strftime('%H:%M')} 执行一次。")
-        else:
-            if msg:
+            else:
                 await msg.reply_text("已写入启用配置，但未成功注册定时任务（请检查 JobQueue 或时间配置）。")
 
     async def auto_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -925,17 +969,18 @@ class VPSChangeIPBot:
             return
 
         msg = get_effective_msg(update)
+        query = getattr(update, "callback_query", None)
         try:
             config["auto_change_enabled"] = False
             persist_config_value("auto_change_enabled", False)
             removed = self.cancel_auto_change_jobs()
         except Exception as e:
             logger.exception(f"关闭自动换IP失败: {e}")
-            if msg:
+            if not query and msg:
                 await msg.reply_text(f"关闭自动换IP失败：{redact_text(str(e))}")
             return
 
-        if msg:
+        if not query and msg:
             await msg.reply_text(f"已关闭自动换IP，已移除 {removed} 个运行中的定时任务。")
 
     async def auto_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -971,11 +1016,12 @@ class VPSChangeIPBot:
                 buttons.append([InlineKeyboardButton("⏹️ 关闭自动换IP", callback_data="main_menu:auto_stop")])
             else:
                 buttons.append([InlineKeyboardButton("▶️ 启用自动换IP", callback_data="main_menu:auto_start")])
-        buttons.append([InlineKeyboardButton("🔄 刷新状态", callback_data="main_menu:auto_status")])
+        buttons.append([
+            InlineKeyboardButton("🔄 刷新状态", callback_data="main_menu:auto_status"),
+            BACK_TO_MENU_BTN,
+        ])
 
-        msg = get_effective_msg(update)
-        if msg:
-            await msg.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+        await send_or_edit_message(update, "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
 
     async def set_auto_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1040,15 +1086,17 @@ class VPSChangeIPBot:
         buttons = []
         if role == "super_admin":
             buttons.append([InlineKeyboardButton("⚙️ 打开管理员管理控制台", callback_data="manage_users:menu")])
-        buttons.append([InlineKeyboardButton("🔄 刷新信息", callback_data="refresh_admins_info")])
+        buttons.append([
+            InlineKeyboardButton("🔄 刷新信息", callback_data="refresh_admins_info"),
+            BACK_TO_MENU_BTN,
+        ])
 
-        msg = get_effective_msg(update)
-        if msg:
-            await msg.reply_text(
-                text,
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
+        await send_or_edit_message(
+            update,
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
 
     async def refresh_admins_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -1084,7 +1132,10 @@ class VPSChangeIPBot:
         buttons = []
         if role == "super_admin":
             buttons.append([InlineKeyboardButton("⚙️ 打开管理员管理控制台", callback_data="manage_users:menu")])
-        buttons.append([InlineKeyboardButton("🔄 刷新信息", callback_data="refresh_admins_info")])
+        buttons.append([
+            InlineKeyboardButton("🔄 刷新信息", callback_data="refresh_admins_info"),
+            BACK_TO_MENU_BTN,
+        ])
 
         try:
             await query.edit_message_text(
@@ -1319,6 +1370,7 @@ class VPSChangeIPBot:
             ],
             [
                 InlineKeyboardButton("📋 查看完整权限看板", callback_data="refresh_admins_info"),
+                BACK_TO_MENU_BTN,
             ],
         ])
         return InlineKeyboardMarkup(rows)
@@ -1330,7 +1382,10 @@ class VPSChangeIPBot:
             rows.append([InlineKeyboardButton(f"🔔 {notice}", callback_data="manage_users:noop")])
         rows.extend([
             [InlineKeyboardButton("请发送 ID、@用户名、链接 或 转发其消息", callback_data="manage_users:noop")],
-            [InlineKeyboardButton("🔙 返回用户管理", callback_data="manage_users:menu")],
+            [
+                InlineKeyboardButton("🔙 返回用户管理", callback_data="manage_users:menu"),
+                BACK_TO_MENU_BTN,
+            ],
         ])
         return InlineKeyboardMarkup(rows)
 
@@ -1342,13 +1397,12 @@ class VPSChangeIPBot:
         context.user_data.pop("awaiting_add_role", None)
         context.user_data.pop("selected_admin_id", None)
         self._user_management_selected_admin_id = ""
-        msg = get_effective_msg(update)
-        if msg:
-            await msg.reply_text(
-                self.user_management_text(update),
-                parse_mode="Markdown",
-                reply_markup=self.user_management_keyboard(),
-            )
+        await send_or_edit_message(
+            update,
+            self.user_management_text(update),
+            parse_mode="Markdown",
+            reply_markup=self.user_management_keyboard(),
+        )
 
     async def manage_users_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1833,18 +1887,29 @@ class VPSChangeIPBot:
                 await msg.reply_text(f"日志文件不存在: {log_path}")
             return
 
-        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 刷新最新日志", callback_data="main_menu:logs")]])
+        reply_markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 刷新最新日志", callback_data="main_menu:logs"),
+                BACK_TO_MENU_BTN,
+            ]
+        ])
         try:
             lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
             text = redact_text("\n".join(lines) or "日志为空")
             if len(text) > 3500:
                 text = text[-3500:]
-            if msg:
-                await msg.reply_text(f"最近 {limit} 行日志:\n{text}", reply_markup=reply_markup)
+            await send_or_edit_message(
+                update,
+                f"最近 {limit} 行日志:\n{text}",
+                reply_markup=reply_markup,
+            )
         except Exception as e:
             logger.exception(f"读取日志失败: {e}")
-            if msg:
-                await msg.reply_text(f"读取日志失败：{redact_text(str(e))}")
+            await send_or_edit_message(
+                update,
+                f"读取日志失败：{redact_text(str(e))}",
+                reply_markup=reply_markup,
+            )
 
     async def dns_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1862,21 +1927,23 @@ class VPSChangeIPBot:
             buttons.append([InlineKeyboardButton("🔴 关闭DNS更新", callback_data="main_menu:dns_off")])
         else:
             buttons.append([InlineKeyboardButton("🟢 开启DNS更新", callback_data="main_menu:dns_on")])
-        buttons.append([InlineKeyboardButton("🔄 刷新DNS状态", callback_data="main_menu:dns_status")])
+        buttons.append([
+            InlineKeyboardButton("🔄 刷新DNS状态", callback_data="main_menu:dns_status"),
+            BACK_TO_MENU_BTN,
+        ])
 
-        msg = get_effective_msg(update)
-        if msg:
-            await msg.reply_text(
-                "DNS更新配置\n"
-                f"状态: {'已启用' if dns_enabled else '未启用'}\n"
-                f"服务商: {provider}\n"
-                f"Zone: {zone_name}\n"
-                f"记录: {record_name}\n"
-                f"类型: {record_type}\n"
-                f"TTL: {ttl}\n"
-                f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
+        await send_or_edit_message(
+            update,
+            "DNS更新配置\n"
+            f"状态: {'已启用' if dns_enabled else '未启用'}\n"
+            f"服务商: {provider}\n"
+            f"Zone: {zone_name}\n"
+            f"记录: {record_name}\n"
+            f"类型: {record_type}\n"
+            f"TTL: {ttl}\n"
+            f"支持: {', '.join(SUPPORTED_DNS_PROVIDERS)}",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
 
     async def set_dns_provider(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -1978,9 +2045,10 @@ class VPSChangeIPBot:
             return
 
         msg = get_effective_msg(update)
+        query = getattr(update, "callback_query", None)
         provider = get_dns_provider_name()
         if not provider:
-            if msg:
+            if not query and msg:
                 await msg.reply_text(
                     "尚未配置DNS服务商。请先使用 /set_dns_provider PROVIDER。"
                 )
@@ -1991,11 +2059,11 @@ class VPSChangeIPBot:
             persist_config_value("dns_update_enabled", True)
         except Exception as e:
             logger.exception(f"启用DNS更新失败: {e}")
-            if msg:
+            if not query and msg:
                 await msg.reply_text(f"启用DNS更新失败：{redact_text(str(e))}")
             return
 
-        if msg:
+        if not query and msg:
             await msg.reply_text(f"已启用DNS更新，当前服务商: {provider}")
 
     async def dns_update_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2003,6 +2071,7 @@ class VPSChangeIPBot:
             return
 
         msg = get_effective_msg(update)
+        query = getattr(update, "callback_query", None)
         try:
             config["dns_update_enabled"] = False
             config["huawei_dns_enabled"] = False
@@ -2010,11 +2079,11 @@ class VPSChangeIPBot:
             persist_config_value("huawei_dns_enabled", False)
         except Exception as e:
             logger.exception(f"关闭DNS更新失败: {e}")
-            if msg:
+            if not query and msg:
                 await msg.reply_text(f"关闭DNS更新失败：{redact_text(str(e))}")
             return
 
-        if msg:
+        if not query and msg:
             await msg.reply_text("已关闭DNS更新。")
 
     async def ip_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2079,18 +2148,25 @@ class VPSChangeIPBot:
                 lines.append(f"- 上次更换结果: {state.get('last_change_status') or '无'}")
             return "\n".join(lines)
 
+        buttons = [
+            [
+                InlineKeyboardButton("🔄 刷新状态", callback_data="main_menu:ip_status"),
+                BACK_TO_MENU_BTN,
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
         if is_all:
             servers = get_servers()
             tasks = [_format_single(s) for s in servers]
             results = await asyncio.gather(*tasks)
-            await msg.reply_text("🌐【所有服务器换IP配置与冷却状态】\n\n" + "\n\n".join(results))
+            await send_or_edit_message(update, "🌐【所有服务器换IP配置与冷却状态】\n\n" + "\n\n".join(results), reply_markup=reply_markup)
         else:
             res_text = await _format_single(server_cfg)
             hint = ""
             if is_multi_server_mode():
                 sname = server_cfg.get("name", server_cfg.get("id"))
                 hint = f"\n\n💡 提示: 当前操作服务器为 [{sname}]，输入 /servers 查看列表，/use 切换"
-            await msg.reply_text(res_text + hint)
+            await send_or_edit_message(update, res_text + hint, reply_markup=reply_markup)
 
     async def set_ip_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -2145,12 +2221,15 @@ class VPSChangeIPBot:
                     callback_data="set_ip_mode:boil",
                 )
             ],
+            [
+                BACK_TO_MENU_BTN,
+            ],
         ]
-        if msg:
-            await msg.reply_text(
-                f"请选择换IP服务商模式（当前: {current}）：",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
+        await send_or_edit_message(
+            update,
+            f"请选择换IP服务商模式（当前: {current}）：",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
 
     async def set_ip_mode_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -2165,6 +2244,12 @@ class VPSChangeIPBot:
         if target not in ("generic", "fachost", "boil"):
             return
 
+        mode_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⚙️ 重新选择模式", callback_data="main_menu:set_ip_mode"),
+                BACK_TO_MENU_BTN,
+            ]
+        ])
         try:
             config["ip_change_provider"] = target
             persist_config_value("ip_change_provider", target)
@@ -2174,10 +2259,16 @@ class VPSChangeIPBot:
                 mode_desc = "Fachost 专用模式 (解析响应 JSON)"
             else:
                 mode_desc = "通用 API 模式 (curl -4 ip.sb 轮询探测)"
-            await query.edit_message_text(f"已成功切换换IP模式为: {mode_desc} ({target})")
+            await query.edit_message_text(
+                f"已成功切换换IP模式为: {mode_desc} ({target})",
+                reply_markup=mode_keyboard,
+            )
         except Exception as e:
             logger.exception(f"切换换IP模式失败: {e}")
-            await query.edit_message_text(f"切换换IP模式失败: {redact_text(str(e))}")
+            await query.edit_message_text(
+                f"切换换IP模式失败: {redact_text(str(e))}",
+                reply_markup=mode_keyboard,
+            )
 
     async def set_boil_token(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_super_admin_permission(update):
@@ -2288,10 +2379,12 @@ class VPSChangeIPBot:
                 InlineKeyboardButton("🔄 全部换IP (/change all)", callback_data="srv_act:change:all"),
             ])
 
-        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-        msg = update.message or (update.callback_query.message if update.callback_query else None)
-        if msg:
-            await msg.reply_text("\n\n".join(lines), reply_markup=reply_markup, parse_mode="Markdown")
+        keyboard.append([
+            InlineKeyboardButton("🔄 刷新看板", callback_data="main_menu:servers"),
+            BACK_TO_MENU_BTN,
+        ])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await send_or_edit_message(update, "\n\n".join(lines), reply_markup=reply_markup, parse_mode="Markdown")
 
     async def use_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -2331,8 +2424,9 @@ class VPSChangeIPBot:
                 row = []
         if row:
             keyboard.append(row)
+        keyboard.append([BACK_TO_MENU_BTN])
 
-        await msg.reply_text("请选择要切换的默认操作服务器：", reply_markup=InlineKeyboardMarkup(keyboard))
+        await send_or_edit_message(update, "请选择要切换的默认操作服务器：", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def server_action_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_user_permission(update):
@@ -2350,18 +2444,24 @@ class VPSChangeIPBot:
         user_id = update.effective_user.id if update.effective_user else 0
 
         if cmd == "cancel":
-            await query.edit_message_text("已取消操作。")
+            await self.start(update, context)
             return
 
         if cmd == "use":
             matched = get_server_config(target)
+            back_k = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🖥️ 返回节点看板", callback_data="main_menu:servers"),
+                    BACK_TO_MENU_BTN,
+                ]
+            ])
             if matched:
                 set_user_selected_server(user_id, matched["id"])
                 matched_sname = str(matched.get("name", matched["id"])).replace("_", "\\_").replace("*", "\\*")
                 matched_sid = str(matched["id"]).replace("`", "")
-                await query.edit_message_text(f"✅ 已将默认操作服务器切换为: 【{matched_sname}】 (`{matched_sid}`)", parse_mode="Markdown")
+                await query.edit_message_text(f"✅ 已将默认操作服务器切换为: 【{matched_sname}】 (`{matched_sid}`)", parse_mode="Markdown", reply_markup=back_k)
             else:
-                await query.edit_message_text(f"❌ 切换失败，未找到节点: {target}")
+                await query.edit_message_text(f"❌ 切换失败，未找到节点: {target}", reply_markup=back_k)
             return
 
         context.args = [target]
@@ -2486,9 +2586,28 @@ class VPSChangeIPBot:
                     node_lines.append("   • DNS更新: 未启用")
                 checks.append("\n".join(node_lines))
 
-        msg = update.message or (update.callback_query.message if update.callback_query else None)
-        if msg:
-            await msg.reply_text("健康检查\n" + "\n".join(f"- {item}" if not item.startswith("\n") and not item.startswith("1") and not item.startswith("2") and not item.startswith("3") and not item.startswith("4") and not item.startswith("5") and not item.startswith("6") and not item.startswith("7") and not item.startswith("8") and not item.startswith("9") else item for item in checks))
+        health_text = "健康检查\n" + "\n".join(
+            f"- {item}"
+            if not item.startswith("\n")
+            and not item.startswith("1")
+            and not item.startswith("2")
+            and not item.startswith("3")
+            and not item.startswith("4")
+            and not item.startswith("5")
+            and not item.startswith("6")
+            and not item.startswith("7")
+            and not item.startswith("8")
+            and not item.startswith("9")
+            else item
+            for item in checks
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("🔄 重新体检", callback_data="main_menu:health"),
+                BACK_TO_MENU_BTN,
+            ]
+        ]
+        await send_or_edit_message(update, health_text, reply_markup=InlineKeyboardMarkup(buttons))
 
     def setup_jobs(self):
         if self.app.job_queue:

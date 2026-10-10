@@ -26,6 +26,7 @@ def get_action_keyboard(command: str, allow_all: bool = True) -> InlineKeyboardM
     if allow_all and len(servers) > 1:
         bottom_row.append(InlineKeyboardButton("🌐 全部服务器", callback_data=f"srv_act:{command}:all"))
     bottom_row.append(InlineKeyboardButton("❌ 取消", callback_data="srv_act:cancel:none"))
+    bottom_row.append(InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"))
     keyboard.append(bottom_row)
     return InlineKeyboardMarkup(keyboard)
 
@@ -82,9 +83,14 @@ async def resolve_target_server(
     }.get(command, command)
 
     prompt_text = f"当前配置了多台服务器，请选择要执行【{cmd_desc}】的目标："
-    if update.message:
+    query = getattr(update, "callback_query", None)
+    if query and not getattr(update, "message", None):
+        try:
+            await query.edit_message_text(prompt_text, reply_markup=reply_markup)
+        except Exception:
+            if getattr(query, "message", None):
+                await query.message.reply_text(prompt_text, reply_markup=reply_markup)
+    elif update.message:
         await update.message.reply_text(prompt_text, reply_markup=reply_markup)
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(prompt_text, reply_markup=reply_markup)
 
     return None, False, True

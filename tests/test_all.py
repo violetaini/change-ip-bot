@@ -2738,6 +2738,141 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
         await bot.main_menu_callback(mock_update, mock_context)
         bot.help.assert_called_once()
 
+    async def test_help_in_place_edit_and_back_button(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        await bot.help(mock_update, MagicMock())
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+    async def test_auto_status_in_place_edit_and_back_button(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        await bot.auto_status(mock_update, MagicMock())
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+    async def test_dns_status_in_place_edit_and_back_button(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        await bot.dns_status(mock_update, MagicMock())
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+    async def test_health_in_place_edit_and_back_button(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        await bot.health(mock_update, MagicMock())
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+    async def test_ip_status_in_place_edit_and_back_button(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        await bot.ip_status(mock_update, MagicMock())
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+    async def test_set_ip_mode_in_place_edit_and_back_button(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = []
+
+        await bot.set_ip_mode(mock_update, mock_context)
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+    async def test_stream_region_handler_and_callback_in_place(self):
+        from handlers.stream_check import set_stream_region_handler, set_stream_region_callback
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = []
+
+        await set_stream_region_handler(mock_update, mock_context)
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs = mock_update.callback_query.edit_message_text.call_args[1]
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks)
+
+        # Callback test
+        mock_update.callback_query.data = "set_stream_reg:3"
+        mock_update.callback_query.answer = AsyncMock()
+        mock_update.callback_query.edit_message_text.reset_mock()
+        await set_stream_region_callback(mock_update, mock_context)
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        kwargs_cb = mock_update.callback_query.edit_message_text.call_args[1]
+        markup_cb = kwargs_cb.get("reply_markup")
+        self.assertIsNotNone(markup_cb)
+        callbacks_cb = [btn.callback_data for row in markup_cb.inline_keyboard for btn in row]
+        self.assertIn("main_menu:refresh", callbacks_cb)
+        self.assertIn("main_menu:stream_region", callbacks_cb)
+
 
 if __name__ == "__main__":
     unittest.main()

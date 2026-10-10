@@ -35,14 +35,23 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
 
     prefix = f"【{sname}】" if is_multi_server_mode() else ""
+    query = getattr(update, "callback_query", None)
     if is_remote_ssh_enabled(server_cfg):
         cfg = get_ssh_config(server_config=server_cfg)
-        status_msg = await msg.reply_text(f"正在通过{prefix}远程 SSH ({cfg['host']}) 获取测速节点列表...")
+        status_text = f"正在通过{prefix}远程 SSH ({cfg['host']}) 获取测速节点列表..."
+        if query and query.message:
+            try:
+                await query.edit_message_text(status_text)
+                status_msg = query.message
+            except Exception:
+                status_msg = await msg.reply_text(status_text)
+        else:
+            status_msg = await msg.reply_text(status_text)
         cmd_str = "speedtest -L --accept-license --accept-gdpr --format=json"
         try:
             code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=30, server_config=server_cfg)
             if "Limit reached" in output:
-                await status_msg.edit_text("测速超过次数限制，请稍后再试")
+                await status_msg.edit_text("测速超过次数限制，请稍后再试", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
                 return
             servers = json.loads(output)["servers"]
             keyboard = []
@@ -54,15 +63,24 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 ])
             keyboard.insert(0, [InlineKeyboardButton("自动选择最佳节点", callback_data="speedtest_auto")])
+            keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             title = f"【{sname}】请选择测速节点:" if is_multi_server_mode() else "请选择测速节点:"
             await status_msg.edit_text(title, reply_markup=reply_markup)
         except Exception as e:
             err_title = f"【{sname}】获取测速节点失败: {str(e)}" if is_multi_server_mode() else f"获取测速节点失败: {str(e)}"
-            await status_msg.edit_text(err_title)
+            await status_msg.edit_text(err_title, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
         return
 
-    status_msg = await msg.reply_text(f"正在获取{prefix}测速节点列表...")
+    status_text = f"正在获取{prefix}测速节点列表..."
+    if query and query.message:
+        try:
+            await query.edit_message_text(status_text)
+            status_msg = query.message
+        except Exception:
+            status_msg = await msg.reply_text(status_text)
+    else:
+        status_msg = await msg.reply_text(status_text)
     try:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -72,7 +90,7 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             timeout=30,
         )
         if "Limit reached" in result.stderr:
-            await status_msg.edit_text("测速超过次数限制，请稍后再试")
+            await status_msg.edit_text("测速超过次数限制，请稍后再试", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
             return
         servers = json.loads(result.stdout)["servers"]
 
@@ -85,12 +103,13 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ])
         keyboard.insert(0, [InlineKeyboardButton("自动选择最佳节点", callback_data="speedtest_auto")])
+        keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         title = f"【{sname}】请选择测速节点:" if is_multi_server_mode() else "请选择测速节点:"
         await status_msg.edit_text(title, reply_markup=reply_markup)
     except Exception as e:
         err_title = f"【{sname}】获取测速节点失败: {str(e)}" if is_multi_server_mode() else f"获取测速节点失败: {str(e)}"
-        await status_msg.edit_text(err_title)
+        await status_msg.edit_text(err_title, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
 
 
 def format_speedtest_result(data: dict, server_name: str = "") -> str:
@@ -185,10 +204,11 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
                 return
 
+        back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
         message = format_speedtest_result(data, server_name=sname if is_multi_server_mode() else "")
-        await query.edit_message_text(message)
+        await query.edit_message_text(message, reply_markup=back_markup)
     except subprocess.TimeoutExpired:
-        await query.edit_message_text("测速超时，请稍后重试")
+        await query.edit_message_text("测速超时，请稍后重试", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
     except Exception as e:
         logger.error(f"测速失败: {str(e)}")
-        await query.edit_message_text(f"测速失败: {str(e)}")
+        await query.edit_message_text(f"测速失败: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
