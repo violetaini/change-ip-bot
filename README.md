@@ -198,6 +198,7 @@ VPS IP Bot natively supports managing multiple distinct VPS, cloud, and resident
 | `/manage_users`| None | Super Admin | Interactive button-based admin management panel (Add/Select/Delete Super or Normal Admin; at least 1 Super Admin retained) |
 | `/add_admin` | `<user_id>` | Super Admin | Add a normal administrator by Telegram user ID |
 | `/add_super_admin` | `<user_id>` | Super Admin | Add or promote a user to Super Administrator |
+| `/demote_admin` | `<user_id>` | Super Admin | Demote a Super Administrator to Normal Admin (min 1 retained) |
 | `/remove_admin` | `[user_id]` | Super Admin | Remove an administrator (super admins must have at least 1 remaining) |
 | `/logs` | `[lines]` | Super Admin | View recent bot logs with automatic credential redaction |
 | `/dns_status` | None | Super Admin | Inspect current dynamic DNS configuration |

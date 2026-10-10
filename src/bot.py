@@ -100,6 +100,7 @@ BOT_COMMANDS = [
     BotCommand("manage_users", "管理管理员用户(超管专用)"),
     BotCommand("add_admin", "添加普通管理员(超管专用)"),
     BotCommand("add_super_admin", "添加超级管理员(超管专用)"),
+    BotCommand("demote_admin", "降级超级管理员为普管(超管专用)"),
     BotCommand("remove_admin", "删除管理员(超管专用)"),
     BotCommand("logs", "查看最近运行日志"),
     BotCommand("health", "检查机器人运行状态"),
@@ -298,6 +299,7 @@ class VPSChangeIPBot:
                 "/set_ip_api URL - 设置换IP接口URL",
                 "/manage_users - 管理管理员权限用户(超管专用)",
                 "/add_super_admin USER_ID - 添加超级管理员(超管专用)",
+                "/demote_admin USER_ID - 降级超级管理员为普通管理员(超管专用)",
                 "/add_admin USER_ID - 添加普通管理员(超管专用)",
                 "/remove_admin [USER_ID] - 删除管理员(超管专用)",
                 "/logs - 查看最近运行日志",
@@ -560,21 +562,49 @@ class VPSChangeIPBot:
             if tmp_dir and os.path.isdir(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def get_scoped_commands(self) -> tuple[list[BotCommand], list[BotCommand]]:
+        active_commands = [
+            cmd for cmd in BOT_COMMANDS
+            if is_multi_server_mode() or cmd.command not in ("servers", "use")
+        ]
+        super_admin_cmd_names = {
+            "auto_start", "auto_stop", "set_auto_time",
+            "set_ip_mode", "set_boil_token", "set_ip_api",
+            "manage_users", "add_admin", "add_super_admin", "demote_admin", "remove_admin",
+            "logs", "dns_status", "set_dns_provider", "set_dns_record",
+            "dns_update_on", "dns_update_off"
+        }
+        super_admin_cmds = active_commands
+        normal_admin_cmds = [cmd for cmd in active_commands if cmd.command not in super_admin_cmd_names]
+        return super_admin_cmds, normal_admin_cmds
+
+    async def sync_user_bot_commands(self, user_id: int | str, role: str):
+        bot_app = getattr(self, "app", None)
+        if not bot_app or not getattr(bot_app, "bot", None):
+            return
+        try:
+            cid = int(str(user_id).strip())
+            super_cmds, normal_cmds = self.get_scoped_commands()
+            if role == "super_admin":
+                await bot_app.bot.set_my_commands(super_cmds, scope=BotCommandScopeChat(chat_id=cid))
+                await bot_app.bot.set_chat_menu_button(chat_id=cid, menu_button=MenuButtonCommands())
+                logger.info(f"已动态为用户 {cid} 实时更新【超级管理员】专属全量命令菜单")
+            elif role == "admin":
+                await bot_app.bot.set_my_commands(normal_cmds, scope=BotCommandScopeChat(chat_id=cid))
+                await bot_app.bot.set_chat_menu_button(chat_id=cid, menu_button=MenuButtonCommands())
+                logger.info(f"已动态为用户 {cid} 实时更新【普通管理员】受限运维命令菜单")
+            else:
+                try:
+                    await bot_app.bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=cid))
+                except Exception:
+                    pass
+                logger.info(f"已清理用户 {cid} 的私聊特权命令菜单")
+        except Exception as e:
+            logger.debug(f"动态同步用户 {user_id} 命令菜单失败: {e}")
+
     async def post_init(self, application: Application):
         try:
-            active_commands = [
-                cmd for cmd in BOT_COMMANDS
-                if is_multi_server_mode() or cmd.command not in ("servers", "use")
-            ]
-            super_admin_cmd_names = {
-                "auto_start", "auto_stop", "set_auto_time",
-                "set_ip_mode", "set_boil_token", "set_ip_api",
-                "manage_users", "add_admin", "add_super_admin", "remove_admin",
-                "logs", "dns_status", "set_dns_provider", "set_dns_record",
-                "dns_update_on", "dns_update_off"
-            }
-            super_admin_cmds = active_commands
-            normal_admin_cmds = [cmd for cmd in active_commands if cmd.command not in super_admin_cmd_names]
+            super_admin_cmds, normal_admin_cmds = self.get_scoped_commands()
 
             # 默认全局作用域
             await application.bot.set_my_commands(normal_admin_cmds, scope=BotCommandScopeDefault())
@@ -898,6 +928,7 @@ class VPSChangeIPBot:
             await update.message.reply_text(f"添加普通管理员失败：{redact_text(str(e))}")
             return
 
+        await self.sync_user_bot_commands(new_admin_id, "admin")
         await update.message.reply_text(f"✅ 已成功添加普通管理员: `{new_admin_id}`", parse_mode="Markdown")
 
     async def add_super_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -935,7 +966,49 @@ class VPSChangeIPBot:
             await update.message.reply_text(f"添加超级管理员失败：{redact_text(str(e))}")
             return
 
+        await self.sync_user_bot_commands(new_id, "super_admin")
         await update.message.reply_text(f"👑 已成功添加超级管理员: `{new_id}`", parse_mode="Markdown")
+
+    async def demote_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_super_admin_permission(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("用法: /demote_admin USER_ID，例如 /demote_admin 123456789")
+            return
+
+        target_id = context.args[0].strip()
+        super_admin_ids = _get_super_admin_id_list()
+        admin_ids = _get_admin_id_list()
+
+        if target_id not in super_admin_ids:
+            if target_id in admin_ids:
+                await update.message.reply_text(f"ℹ️ 用户 `{target_id}` 已经是普通管理员，无需降级。", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"未在超级管理员列表中找到用户 `{target_id}`。", parse_mode="Markdown")
+            return
+
+        if len(super_admin_ids) <= 1:
+            await update.message.reply_text("⛔ 操作拒绝：超级管理员至少必须保留 1 个，禁止降级最后一位超级管理员！")
+            return
+
+        super_admin_ids = [x for x in super_admin_ids if x != target_id]
+        if target_id not in admin_ids:
+            admin_ids.append(target_id)
+        rendered_super = ",".join(super_admin_ids)
+        rendered_admin = ",".join(admin_ids)
+        try:
+            config["telegram_super_admin_user_ids"] = rendered_super
+            persist_config_value("telegram_super_admin_user_ids", rendered_super)
+            config["telegram_admin_user_ids"] = rendered_admin
+            persist_config_value("telegram_admin_user_ids", rendered_admin)
+        except Exception as e:
+            logger.exception(f"降级超级管理员失败: {e}")
+            await update.message.reply_text(f"降级超级管理员失败：{redact_text(str(e))}")
+            return
+
+        await self.sync_user_bot_commands(target_id, "admin")
+        await update.message.reply_text(f"👤 已成功将超级管理员 `{target_id}` 降为普通管理员，并已实时更新其命令菜单。", parse_mode="Markdown")
 
     def user_management_text(self, update: Optional[Update] = None, notice: str = "") -> str:
         super_admins = _get_super_admin_id_list()
@@ -1012,6 +1085,18 @@ class VPSChangeIPBot:
             rows.append([InlineKeyboardButton("👤 暂无普通管理员", callback_data="manage_users:noop")])
 
         del_label = f"🗑️ 删除选中 ({selected_admin_id})" if selected_admin_id else "🗑️ 删除选中管理员"
+
+        # 如果选中了管理员，提供一键转换角色按钮
+        if selected_admin_id:
+            if selected_admin_id in admin_ids:
+                rows.append([
+                    InlineKeyboardButton(f"👑 一键转为超级管理员 ({selected_admin_id})", callback_data=f"manage_users:promote:{selected_admin_id}")
+                ])
+            elif selected_admin_id in super_admin_ids:
+                rows.append([
+                    InlineKeyboardButton(f"👤 一键转为普通管理员 ({selected_admin_id})", callback_data=f"manage_users:demote:{selected_admin_id}")
+                ])
+
         rows.extend([
             [
                 InlineKeyboardButton("➕ 添加普通管理员", callback_data="manage_users:add_normal"),
@@ -1147,6 +1232,7 @@ class VPSChangeIPBot:
                     await query.edit_message_text(f"删除超级管理员失败：{redact_text(str(e))}")
                     return
 
+                await self.sync_user_bot_commands(admin_id, "")
                 context.user_data.pop("selected_admin_id", None)
                 self._user_management_selected_admin_id = ""
                 await query.edit_message_text(
@@ -1167,6 +1253,7 @@ class VPSChangeIPBot:
                     await query.edit_message_text(f"删除普通管理员失败：{redact_text(str(e))}")
                     return
 
+                await self.sync_user_bot_commands(admin_id, "")
                 context.user_data.pop("selected_admin_id", None)
                 self._user_management_selected_admin_id = ""
                 await query.edit_message_text(
@@ -1182,6 +1269,75 @@ class VPSChangeIPBot:
                 self.user_management_text(update, notice=f"目标管理员已不在列表中: `{admin_id}`"),
                 parse_mode="Markdown",
                 reply_markup=self.user_management_keyboard("目标不在列表中"),
+            )
+            return
+
+        if data.startswith("manage_users:promote:"):
+            target_id = data.split(":", 2)[2].strip()
+            super_admin_ids = _get_super_admin_id_list()
+            admin_ids = _get_admin_id_list()
+            if target_id not in super_admin_ids:
+                super_admin_ids.append(target_id)
+                admin_ids = [x for x in admin_ids if x != target_id]
+                rendered_super = ",".join(super_admin_ids)
+                rendered_admin = ",".join(admin_ids)
+                try:
+                    config["telegram_super_admin_user_ids"] = rendered_super
+                    persist_config_value("telegram_super_admin_user_ids", rendered_super)
+                    config["telegram_admin_user_ids"] = rendered_admin
+                    persist_config_value("telegram_admin_user_ids", rendered_admin)
+                except Exception as e:
+                    logger.exception(f"升级超级管理员失败: {e}")
+                    await query.edit_message_text(f"升级超级管理员失败：{redact_text(str(e))}")
+                    return
+
+                await self.sync_user_bot_commands(target_id, "super_admin")
+
+            context.user_data["selected_admin_id"] = target_id
+            self._user_management_selected_admin_id = target_id
+            await query.edit_message_text(
+                self.user_management_text(update, notice=f"👑 已成功将用户 `{target_id}` 升为超级管理员，并已实时更新其全量命令菜单！"),
+                parse_mode="Markdown",
+                reply_markup=self.user_management_keyboard("已转为超级管理员"),
+            )
+            return
+
+        if data.startswith("manage_users:demote:"):
+            target_id = data.split(":", 2)[2].strip()
+            super_admin_ids = _get_super_admin_id_list()
+            admin_ids = _get_admin_id_list()
+            if len(super_admin_ids) <= 1:
+                await query.edit_message_text(
+                    self.user_management_text(update, notice="⛔ 操作拒绝：超级管理员至少必须保留 1 个，禁止降级最后一位超级管理员！"),
+                    parse_mode="Markdown",
+                    reply_markup=self.user_management_keyboard("超管至少保留1个"),
+                )
+                return
+
+            if target_id in super_admin_ids:
+                super_admin_ids = [x for x in super_admin_ids if x != target_id]
+                if target_id not in admin_ids:
+                    admin_ids.append(target_id)
+                rendered_super = ",".join(super_admin_ids)
+                rendered_admin = ",".join(admin_ids)
+                try:
+                    config["telegram_super_admin_user_ids"] = rendered_super
+                    persist_config_value("telegram_super_admin_user_ids", rendered_super)
+                    config["telegram_admin_user_ids"] = rendered_admin
+                    persist_config_value("telegram_admin_user_ids", rendered_admin)
+                except Exception as e:
+                    logger.exception(f"降级超级管理员失败: {e}")
+                    await query.edit_message_text(f"降级超级管理员失败：{redact_text(str(e))}")
+                    return
+
+                await self.sync_user_bot_commands(target_id, "admin")
+
+            context.user_data["selected_admin_id"] = target_id
+            self._user_management_selected_admin_id = target_id
+            await query.edit_message_text(
+                self.user_management_text(update, notice=f"👤 已成功将超级管理员 `{target_id}` 降为普通管理员，并已实时剪裁其命令菜单！"),
+                parse_mode="Markdown",
+                reply_markup=self.user_management_keyboard("已转为普通管理员"),
             )
             return
 
@@ -1206,6 +1362,7 @@ class VPSChangeIPBot:
                 except Exception as e:
                     await update.message.reply_text(f"删除失败：{redact_text(str(e))}")
                     return
+                await self.sync_user_bot_commands(target_id, "")
                 await update.message.reply_text(f"✅ 已成功删除超级管理员: `{target_id}`", parse_mode="Markdown")
                 return
             elif target_id in admin_ids:
@@ -1217,6 +1374,7 @@ class VPSChangeIPBot:
                 except Exception as e:
                     await update.message.reply_text(f"删除失败：{redact_text(str(e))}")
                     return
+                await self.sync_user_bot_commands(target_id, "")
                 await update.message.reply_text(f"✅ 已成功删除普通管理员: `{target_id}`", parse_mode="Markdown")
                 return
             else:
@@ -1266,6 +1424,7 @@ class VPSChangeIPBot:
                 logger.exception(f"删除超级管理员失败: {e}")
                 await query.edit_message_text(f"删除超级管理员失败：{redact_text(str(e))}")
                 return
+            await self.sync_user_bot_commands(target_id, "")
             await query.edit_message_text(f"✅ 已成功删除超级管理员: `{target_id}`", parse_mode="Markdown")
             return
 
@@ -1279,6 +1438,7 @@ class VPSChangeIPBot:
                 logger.exception(f"删除普通管理员失败: {e}")
                 await query.edit_message_text(f"删除普通管理员失败：{redact_text(str(e))}")
                 return
+            await self.sync_user_bot_commands(target_id, "")
             await query.edit_message_text(f"✅ 已成功删除普通管理员: `{target_id}`", parse_mode="Markdown")
             return
 
@@ -1334,6 +1494,7 @@ class VPSChangeIPBot:
                 await update.message.reply_text(f"添加超级管理员失败：{redact_text(str(e))}")
                 return
 
+            await self.sync_user_bot_commands(new_admin_id, "super_admin")
             await update.message.reply_text(
                 self.user_management_text(update, notice=f"👑 已成功添加超级管理员: `{new_admin_id}`"),
                 parse_mode="Markdown",
@@ -1367,6 +1528,7 @@ class VPSChangeIPBot:
                 await update.message.reply_text(f"添加普通管理员失败：{redact_text(str(e))}")
                 return
 
+            await self.sync_user_bot_commands(new_admin_id, "admin")
             await update.message.reply_text(
                 self.user_management_text(update, notice=f"✅ 已成功添加普通管理员: `{new_admin_id}`"),
                 parse_mode="Markdown",
@@ -2046,6 +2208,7 @@ class VPSChangeIPBot:
         self.app.add_handler(CommandHandler("manage_users", self.manage_users))
         self.app.add_handler(CommandHandler("add_admin", self.add_admin))
         self.app.add_handler(CommandHandler("add_super_admin", self.add_super_admin))
+        self.app.add_handler(CommandHandler("demote_admin", self.demote_admin))
         self.app.add_handler(CommandHandler("remove_admin", self.remove_admin))
         self.app.add_handler(CommandHandler("logs", self.logs))
         self.app.add_handler(CommandHandler("health", self.health))
