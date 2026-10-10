@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import re
+import urllib.parse
 import datetime as dt
 from datetime import time as datetime_time
 from pathlib import Path
@@ -1938,6 +1939,10 @@ class VPSChangeIPBot:
             return
 
         token = context.args[0].strip()
+        if not token or len(token) > 512 or any(c in token for c in ("\r", "\n", " ", "\t")):
+            await update.effective_chat.send_message("❌ Boil API Token 格式无效（不能为空且不得包含空格或换行）")
+            return
+
         try:
             await update.message.delete()
         except Exception:
@@ -1960,6 +1965,11 @@ class VPSChangeIPBot:
             return
 
         url = context.args[0].strip()
+        parsed = urllib.parse.urlparse(url)
+        if not (parsed.scheme in ("http", "https") and parsed.netloc) or any(c in url for c in ("\r", "\n", " ", "\t")):
+            await update.message.reply_text("❌ 无效的 URL 格式，必须是以 http:// 或 https:// 开头的合法接口地址且不得包含空格或换行")
+            return
+
         try:
             config["ip_change_api"] = url
             persist_config_value("ip_change_api", url)

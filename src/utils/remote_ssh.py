@@ -152,8 +152,10 @@ def build_ssh_command_prefix(ssh_cfg: Dict[str, Any]) -> list[str]:
     if not use_sshpass:
         cmd.extend(["-o", "BatchMode=yes"])
 
-    user = ssh_cfg.get("user") or "root"
-    host = ssh_cfg.get("host")
+    user = str(ssh_cfg.get("user") or "root").strip()
+    host = str(ssh_cfg.get("host") or "").strip()
+    if host.startswith("-"):
+        raise ValueError(f"非法的 SSH 目标主机: {host}")
     cmd.append(f"{user}@{host}")
     if use_sshpass:
         return ["sshpass", "-p", password] + cmd
@@ -180,7 +182,7 @@ def run_remote_ssh_command(
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
-        "timeout": max(10, int(timeout)),
+        "timeout": max(5, min(int(timeout), 3600)),
     }
     if input_data is not None:
         run_kwargs["input"] = input_data

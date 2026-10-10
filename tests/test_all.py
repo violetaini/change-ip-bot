@@ -2037,6 +2037,130 @@ class TestUserCacheAndUsernameAdmin(unittest.IsolatedAsyncioTestCase):
         bot.sync_user_bot_commands.assert_called_with("66666", "admin")
 
 
+class TestSecurityAndSanitization(unittest.IsolatedAsyncioTestCase):
+    def test_is_valid_ping_target(self):
+        from handlers.ping import is_valid_ping_target
+        # Valid targets
+        self.assertTrue(is_valid_ping_target("1.1.1.1"))
+        self.assertTrue(is_valid_ping_target("8.8.8.8"))
+        self.assertTrue(is_valid_ping_target("2606:4700:4700::1111"))
+        self.assertTrue(is_valid_ping_target("::1"))
+        self.assertTrue(is_valid_ping_target("google.com"))
+        self.assertTrue(is_valid_ping_target("one.one.one.one"))
+        self.assertTrue(is_valid_ping_target("localhost"))
+
+        # Malicious targets (command injection attempts)
+        self.assertFalse(is_valid_ping_target("1.1.1.1; whoami"))
+        self.assertFalse(is_valid_ping_target("1.1.1.1 && reboot"))
+        self.assertFalse(is_valid_ping_target("1.1.1.1 | cat /etc/passwd"))
+        self.assertFalse(is_valid_ping_target("1.1.1.1 $(id)"))
+        self.assertFalse(is_valid_ping_target("`id`"))
+        self.assertFalse(is_valid_ping_target("-c 5"))
+        self.assertFalse(is_valid_ping_target("-i 0.2"))
+        self.assertFalse(is_valid_ping_target("1.1.1.1\nreboot"))
+        self.assertFalse(is_valid_ping_target(""))
+        self.assertFalse(is_valid_ping_target("   "))
+
+    def test_parse_ping_params_sanitization(self):
+        from handlers.ping import parse_ping_params
+        target, count, v, warn = parse_ping_params(["1.1.1.1; id"])
+        self.assertEqual(target, "")
+        self.assertIn("无效的目标地址", warn)
+
+        target, count, v, warn = parse_ping_params(["8.8.8.8", "-c", "5"])
+        self.assertEqual(target, "8.8.8.8")
+        self.assertEqual(count, 5)
+
+    @patch("utils.remote_ssh.run_remote_ssh_command")
+    @patch("subprocess.run")
+    async def test_ping_handler_rejects_injection(self, mock_subp, mock_ssh):
+        from handlers.ping import ping_handler
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 12345
+        mock_update.message.reply_text = AsyncMock()
+
+        mock_context = MagicMock()
+        mock_context.args = ["1.1.1.1; whoami"]
+
+        with patch("handlers.ping.check_user_permission", return_value=True), \
+             patch("handlers.ping.resolve_target_server", return_value=({"id": "default"}, False, False)):
+            await ping_handler(mock_update, mock_context)
+
+        mock_ssh.assert_not_called()
+        mock_subp.assert_not_called()
+        mock_update.message.reply_text.assert_called_once()
+        self.assertIn("无效的目标地址", mock_update.message.reply_text.call_args[0][0])
+
+    async def test_speedtest_callback_sanitization(self):
+        from handlers.speedtest import speedtest_callback
+        mock_update = MagicMock()
+        mock_update.callback_query.data = "speedtest_1234; rm -rf /"
+        mock_update.callback_query.answer = AsyncMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+
+        mock_context = MagicMock()
+        with patch("handlers.speedtest.check_user_permission", return_value=True), \
+             patch("utils.remote_ssh.run_remote_ssh_command") as mock_ssh, \
+             patch("subprocess.run") as mock_subp:
+            await speedtest_callback(mock_update, mock_context)
+            mock_ssh.assert_not_called()
+            mock_subp.assert_not_called()
+            mock_update.callback_query.edit_message_text.assert_called_once_with("无效的测速节点ID")
+
+    async def test_set_ip_api_validation(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+
+        mock_context = MagicMock()
+        mock_context.args = ["javascript:alert(1)"]
+
+        with patch("bot.check_super_admin_permission", return_value=True):
+            await bot.set_ip_api(mock_update, mock_context)
+            self.assertIn("无效的 URL 格式", mock_update.message.reply_text.call_args[0][0])
+
+        # Valid URL
+        mock_context.args = ["https://api.example.com/change-ip"]
+        with patch("bot.check_super_admin_permission", return_value=True), \
+             patch("bot.persist_config_value"):
+            await bot.set_ip_api(mock_update, mock_context)
+            self.assertIn("已成功设置并保存", mock_update.message.reply_text.call_args[0][0])
+
+    async def test_set_boil_token_validation(self):
+        from bot import VPSChangeIPBot
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message.delete = AsyncMock()
+        mock_update.effective_chat.send_message = AsyncMock()
+
+        # Whitespace token
+        mock_context = MagicMock()
+        mock_context.args = ["   "]
+        with patch("bot.check_super_admin_permission", return_value=True):
+            await bot.set_boil_token(mock_update, mock_context)
+            self.assertIn("格式无效", mock_update.effective_chat.send_message.call_args[0][0])
+
+        # Valid token
+        mock_context.args = ["valid_secret_token_12345"]
+        with patch("bot.check_super_admin_permission", return_value=True), \
+             patch("bot.persist_config_value"):
+            await bot.set_boil_token(mock_update, mock_context)
+            self.assertIn("已成功设置并保存", mock_update.effective_chat.send_message.call_args[0][0])
+
+    def test_probe_domestic_http_sanitization(self):
+        from utils.network import probe_domestic_http
+        # Injected target
+        ok, desc, _ = probe_domestic_http("1.1.1.1; reboot", 4)
+        self.assertFalse(ok)
+        self.assertIn("无效的探测目标", desc)
+
+    def test_build_ssh_command_prefix_rejects_flag_host(self):
+        from utils.remote_ssh import build_ssh_command_prefix
+        with self.assertRaises(ValueError):
+            build_ssh_command_prefix({"host": "-oProxyCommand=calc.exe", "port": 22})
+
+
 if __name__ == "__main__":
     unittest.main()
 

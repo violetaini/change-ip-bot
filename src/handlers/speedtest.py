@@ -144,7 +144,10 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not query.data.startswith("speedtest_"):
         return
 
-    ookla_server_id = query.data.split("_")[1]
+    ookla_server_id = query.data.split("_")[1].strip()
+    if ookla_server_id != "auto" and not (ookla_server_id.isdigit() and len(ookla_server_id) <= 10):
+        await query.edit_message_text("无效的测速节点ID")
+        return
     cmd = ["speedtest", "--accept-license", "--accept-gdpr", "--format=json"]
     if ookla_server_id != "auto":
         cmd.extend(["-s", ookla_server_id])

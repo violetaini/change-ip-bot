@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import os
 import re
 import subprocess
@@ -11,6 +12,34 @@ from config import config, is_multi_server_mode
 from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
+
+
+def is_valid_ping_target(target: str) -> bool:
+    """
+    严格校验 ping 目标地址，仅允许合法 IPv4、IPv6、合法域名或主机名。
+    杜绝分号、反引号、美元符号、管道符等任何 Shell 命令注入元字符。
+    """
+    if not target or not isinstance(target, str):
+        return False
+    t = target.strip()
+    if not t or len(t) > 253 or t.startswith("-"):
+        return False
+
+    # 1. 尝试作为合法的 IP 地址（IPv4 或 IPv6）解析
+    try:
+        ipaddress.ip_address(t)
+        return True
+    except ValueError:
+        pass
+
+    # 2. 严格的合法域名规范正则（如 google.com、sub.example.co.uk、localhost）
+    domain_pattern = r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$|^localhost$"
+    if re.fullmatch(domain_pattern, t):
+        return True
+
+    # 3. 局域网主机名（纯单标号字母数字及连字符）
+    hostname_pattern = r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$"
+    return bool(re.fullmatch(hostname_pattern, t))
 
 
 def parse_ping_params(
@@ -64,6 +93,8 @@ def parse_ping_params(
         warning = "Ping 次数已限制为最大值 100"
 
     if target:
+        if not is_valid_ping_target(target):
+            return "", count, ip_version or 4, "无效的目标地址，仅支持合法 IP 地址或域名"
         if ip_version is None:
             if ":" in target:
                 ip_version = 6
@@ -158,6 +189,10 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target, count, ip_version, warning = parse_ping_params(
         args, default_v4=default_v4, default_v6=default_v6, default_count=default_count
     )
+
+    if not target or not is_valid_ping_target(target):
+        await msg.reply_text(warning or "无效的目标地址，仅支持合法 IP 地址或域名")
+        return
 
     if warning:
         await msg.reply_text(warning)

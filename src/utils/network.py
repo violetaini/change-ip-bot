@@ -144,8 +144,13 @@ def probe_domestic_http(
     if not target_ip:
         return False, "目标IP为空", 0
 
+    clean_target = str(target_ip).strip()
+    clean_domain = str(domain or "").strip()
+    if not re.match(r"^[0-9a-fA-F.:\[\]]+$", clean_target) or not re.match(r"^[a-zA-Z0-9.-]+$", clean_domain):
+        return False, "无效的探测目标或域名", 0
+
     cmd_flag = "-6" if ip_version == 6 else ""
-    ip_fmt = f"[{target_ip}]" if ip_version == 6 else target_ip
+    ip_fmt = f"[{clean_target}]" if ip_version == 6 and not (clean_target.startswith("[") and clean_target.endswith("]")) else clean_target
     curl_cmd = (
         f"curl {cmd_flag} -s -I --connect-timeout {timeout} -m {timeout + 2} "
         f"--resolve {domain}:443:{ip_fmt} https://{domain} -o /dev/null "
