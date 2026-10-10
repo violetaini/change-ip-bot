@@ -1364,6 +1364,84 @@ class TestStreamCheckDualStack(unittest.TestCase):
             mock_run.assert_called_once()
             self.assertEqual(mock_run.call_args[0][1], "1")
 
+    def test_stream_check_caching_and_timeout_fallback(self):
+        from handlers.stream_check import (
+            get_cached_country_code,
+            set_cached_country_code,
+            stream_check_handler,
+        )
+        set_cached_country_code("srv_test_cache", "HK")
+        self.assertEqual(get_cached_country_code("srv_test_cache"), "HK")
+
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = []
+
+        # Simulate API detection timeout (detect_ip_country_code returns None)
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv_test_cache", "name": "香港节点", "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.detect_ip_country_code", return_value=None), \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes (Region: HK)", 12.0)) as mock_run:
+
+            asyncio.run(stream_check_handler(update, context))
+
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "2")
+            self.assertTrue(any("使用缓存: HK" in call.args[0] for call in msg.reply_text.call_args_list))
+
+    def test_stream_check_first_run_timeout_fallback_to_config(self):
+        from handlers.stream_check import stream_check_handler
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = []
+
+        # No cache, API returns None
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv_no_cache", "name": "新节点", "stream_check_input": "3", "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.get_cached_country_code", return_value=None), \
+             patch("handlers.stream_check.detect_ip_country_code", return_value=None), \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes", 10.0)) as mock_run:
+
+            asyncio.run(stream_check_handler(update, context))
+
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "3")
+            self.assertTrue(any("使用配置默认" in call.args[0] for call in msg.reply_text.call_args_list))
+
+    def test_stream_check_manual_mode_no_detect(self):
+        from handlers.stream_check import stream_check_handler
+        update = MagicMock()
+        update.effective_user.id = 6256565801
+        msg = AsyncMock()
+        update.message = msg
+        update.callback_query = None
+
+        context = MagicMock()
+        context.args = []
+
+        # stream_check_auto_detect is False
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=True)), \
+             patch("handlers.stream_check.resolve_target_server", new=AsyncMock(return_value=({"id": "srv_manual", "name": "手动节点", "stream_check_auto_detect": False, "stream_check_input": "4", "remote_ssh_enabled": False}, False, False))), \
+             patch("handlers.stream_check.detect_ip_country_code") as mock_detect, \
+             patch("handlers.stream_check.run_stream_command", return_value=(0, "Netflix: Yes (Region: US)", 10.0)) as mock_run:
+
+            asyncio.run(stream_check_handler(update, context))
+
+            mock_detect.assert_not_called()
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][1], "4")
+            self.assertTrue(any("手动设定" in call.args[0] for call in msg.reply_text.call_args_list))
+
 
 class TestPingDualStack(unittest.TestCase):
     def test_parse_ping_params_defaults(self):

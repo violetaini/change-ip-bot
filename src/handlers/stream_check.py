@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 from telegram import Update
@@ -361,6 +361,48 @@ def parse_country_code_from_response(raw_text: str) -> Optional[str]:
     return None
 
 
+_STREAM_GEO_CACHE: Dict[str, Tuple[str, float]] = {}
+
+
+def get_cached_country_code(server_id: str = "default") -> Optional[str]:
+    """Get cached country code from memory or persistent server state."""
+    sid = str(server_id or "default").strip()
+    entry = _STREAM_GEO_CACHE.get(sid)
+    if entry and entry[0]:
+        return entry[0]
+
+    try:
+        from utils.state import load_server_state
+        s_state = load_server_state(sid)
+        cached = s_state.get("cached_stream_country")
+        if cached and isinstance(cached, str):
+            code = cached.strip().upper()
+            ts = float(s_state.get("cached_stream_country_at", 0) or 0)
+            _STREAM_GEO_CACHE[sid] = (code, ts)
+            return code
+    except Exception as e:
+        logger.debug(f"读取流媒体区域缓存异常 ({sid}): {e}")
+    return None
+
+
+def set_cached_country_code(server_id: str, country_code: str) -> None:
+    """Save cached country code to memory and persistent server state."""
+    sid = str(server_id or "default").strip()
+    code = str(country_code or "").strip().upper()
+    if not code:
+        return
+    now = time.time()
+    _STREAM_GEO_CACHE[sid] = (code, now)
+    try:
+        from utils.state import update_server_state_keys
+        update_server_state_keys(sid, {
+            "cached_stream_country": code,
+            "cached_stream_country_at": now,
+        })
+    except Exception as e:
+        logger.debug(f"持久化流媒体区域缓存异常 ({sid}): {e}")
+
+
 def detect_ip_country_code(server_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Detect exit IP country code via IP.SB API (remotely via SSH if configured, else locally)."""
     from utils.remote_ssh import is_remote_ssh_enabled, run_remote_ssh_command
@@ -368,21 +410,27 @@ def detect_ip_country_code(server_config: Optional[Dict[str, Any]] = None) -> Op
     cfg = server_config if server_config is not None else config
     url = str(cfg.get("stream_check_api") or DEFAULT_STREAM_API).strip()
     try:
+        raw_timeout = int(cfg.get("stream_check_api_timeout", 3))
+    except (ValueError, TypeError):
+        raw_timeout = 3
+    api_timeout = max(1, min(raw_timeout, 30))
+
+    try:
         if is_remote_ssh_enabled(server_config):
-            cmd = f'curl -s -m 5 "{url}"'
-            code, out = run_remote_ssh_command(cmd, timeout=10, server_config=server_config)
+            cmd = f'curl -s -m {api_timeout} "{url}"'
+            code, out = run_remote_ssh_command(cmd, timeout=api_timeout + 5, server_config=server_config)
             if code == 0 and out:
                 return parse_country_code_from_response(out)
         else:
             resp = requests.get(
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                timeout=5,
+                timeout=api_timeout,
             )
             if resp.ok:
                 return parse_country_code_from_response(resp.text)
     except Exception as e:
-        logger.warning(f"自动检测出口 IP 归属地失败 ({url}): {e}")
+        logger.warning(f"自动检测出口 IP 归属地失败 ({url}, timeout={api_timeout}s): {e}")
     return None
 
 
@@ -423,22 +471,35 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         auto_detect = bool(cfg.get("stream_check_auto_detect", True))
         if auto_detect:
+            # 每次先获取当前定位（较短超时时间）
             detected_country = await asyncio.to_thread(detect_ip_country_code, server_cfg)
             if detected_country and detected_country in COUNTRY_TO_REGION_INPUT:
+                # 获取成功 -> 写入缓存并使用
+                set_cached_country_code(sid, detected_country)
                 auto_input = COUNTRY_TO_REGION_INPUT[detected_country]
                 base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
                 region_desc = f"{base_name} (自动识别: {detected_country})"
-                logger.info(f"【{sname}】通过 IP.SB 自动识别出口 IP 国家: {detected_country} -> 流媒体选项: {auto_input}")
+                logger.info(f"【{sname}】通过 IP.SB 自动识别出口 IP 国家: {detected_country} -> 流媒体选项: {auto_input}，已写入缓存")
             else:
-                auto_input = str(cfg.get("stream_check_input", "2")).strip()
-                base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-                reason = f"自动识别: {detected_country} 未匹配，使用默认" if detected_country else "识别超时/失败，使用默认"
-                region_desc = f"{base_name} ({reason})"
-                logger.info(f"【{sname}】国家代码未匹配或识别失败 ({detected_country})，回退到默认选项: {auto_input}")
+                # 获取超时或失败 -> 优先使用缓存
+                cached_country = get_cached_country_code(sid)
+                if cached_country and cached_country in COUNTRY_TO_REGION_INPUT:
+                    auto_input = COUNTRY_TO_REGION_INPUT[cached_country]
+                    base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                    region_desc = f"{base_name} (定位超时，使用缓存: {cached_country})"
+                    logger.warning(f"【{sname}】定位探测超时或未匹配 ({detected_country})，使用缓存国家: {cached_country} -> 流媒体选项: {auto_input}")
+                else:
+                    # 首次超时且无缓存 -> 回退到配置手动设定
+                    auto_input = str(cfg.get("stream_check_input", "2")).strip()
+                    base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                    reason = f"自动识别: {detected_country} 未匹配无缓存，使用配置默认" if detected_country else "识别超时无缓存，使用配置默认"
+                    region_desc = f"{base_name} ({reason})"
+                    logger.info(f"【{sname}】定位超时且无有效缓存，回退到配置默认选项: {auto_input}")
         else:
+            # 配置手动设定模式
             auto_input = str(cfg.get("stream_check_input", "2")).strip()
             base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-            region_desc = f"{base_name} (默认)"
+            region_desc = f"{base_name} (手动设定)"
 
     prefix = f"【{sname}】" if is_multi_server_mode() else ""
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled

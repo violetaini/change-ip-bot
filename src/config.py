@@ -65,6 +65,7 @@ DEFAULT_CONFIG = {
     "stream_check_timeout": 1200,
     "stream_check_auto_detect": True,
     "stream_check_api": "https://api.ip.sb/geoip?callback=getgeoip",
+    "stream_check_api_timeout": 3,
     "remote_ssh_enabled": False,
     "remote_ssh_host": "",
     "remote_ssh_port": 22,

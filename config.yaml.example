@@ -99,7 +99,13 @@ ip_quality_cmd: "bash <(curl -sL https://IP.Check.Place) -y"
 # 流媒体解锁检测配置
 stream_check_enabled: true
 stream_check_cmd: "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
-# 脚本交互自动输入选项（2=跨国+香港, 1=跨国+台湾, 3=日本, 4=北美, 0=仅跨国, 10=AI平台）
+# 自动通过 API 探测出口 IP 归属地（推荐 true；若为 false 则直接使用 stream_check_input 手动设定的模式）
+stream_check_auto_detect: true
+# 自动探测归属地 API（默认 IP.SB 高速 BGP Anycast 接口）
+stream_check_api: "https://api.ip.sb/geoip?callback=getgeoip"
+# 探测超时时间（秒，默认 3 秒；超时后自动优先采用上次成功的历史缓存，若无缓存再回退默认）
+stream_check_api_timeout: 3
+# 手动设定或未探测到时的保底输入选项（2=跨国+香港, 1=跨国+台湾, 3=日本, 4=北美, 0=仅跨国, 10=AI平台）
 stream_check_input: "2"
 stream_check_timeout: 1200
 
