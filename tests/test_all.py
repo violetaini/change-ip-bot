@@ -501,11 +501,150 @@ class TestAdminPermissionsAsync(unittest.IsolatedAsyncioTestCase):
         if isinstance(InlineKeyboardButton, MagicMock):
             btn_args = [str(call[0][0]) for call in InlineKeyboardButton.call_args_list if call[0]]
             self.assertTrue(any("22222" in a for a in btn_args))
-            self.assertFalse(any("11111" in a for a in btn_args))
+            self.assertTrue(any("11111" in a for a in btn_args))
         else:
             buttons_flat = [b.text for row in kb.inline_keyboard for b in row]
             self.assertTrue(any("22222" in b for b in buttons_flat))
-            self.assertFalse(any("11111" in b for b in buttons_flat))
+            self.assertTrue(any("11111" in b for b in buttons_flat))
+
+        # Test selection highlighting
+        bot._user_management_selected_admin_id = "11111"
+        kb_sel = bot.user_management_keyboard()
+        if not isinstance(InlineKeyboardButton, MagicMock):
+            buttons_flat_sel = [b.text for row in kb_sel.inline_keyboard for b in row]
+            self.assertTrue(any("✅ 11111" in b for b in buttons_flat_sel))
+            self.assertTrue(any("删除选中: 11111" in b for b in buttons_flat_sel))
+
+    @patch("bot.persist_config_value")
+    async def test_user_management_delete_super_admin_blocked_when_only_one(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.callback_query = MagicMock()
+        mock_update.callback_query.data = "manage_users:delete_selected"
+        mock_update.callback_query.answer = AsyncMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_update.effective_user.id = 11111
+
+        mock_context = MagicMock()
+        mock_context.user_data = {"selected_admin_id": "11111"}
+
+        await bot.manage_users_callback(mock_update, mock_context)
+
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        sent_text = mock_update.callback_query.edit_message_text.call_args[0][0]
+        self.assertIn("超级管理员至少必须保留 1 个", sent_text)
+        mock_persist.assert_not_called()
+        self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
+
+    @patch("bot.persist_config_value")
+    async def test_user_management_delete_super_admin_success_when_multiple(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111,99999"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.callback_query = MagicMock()
+        mock_update.callback_query.data = "manage_users:delete_selected"
+        mock_update.callback_query.answer = AsyncMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_update.effective_user.id = 11111
+
+        mock_context = MagicMock()
+        mock_context.user_data = {"selected_admin_id": "99999"}
+
+        await bot.manage_users_callback(mock_update, mock_context)
+
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        sent_text = mock_update.callback_query.edit_message_text.call_args[0][0]
+        self.assertIn("已成功删除超级管理员: `99999`", sent_text)
+        mock_persist.assert_called_once_with("telegram_super_admin_user_ids", "11111")
+        self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
+
+    @patch("bot.persist_config_value")
+    async def test_user_management_delete_regular_admin_success(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222,33333"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.callback_query = MagicMock()
+        mock_update.callback_query.data = "manage_users:delete_selected"
+        mock_update.callback_query.answer = AsyncMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_update.effective_user.id = 11111
+
+        mock_context = MagicMock()
+        mock_context.user_data = {"selected_admin_id": "22222"}
+
+        await bot.manage_users_callback(mock_update, mock_context)
+
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        sent_text = mock_update.callback_query.edit_message_text.call_args[0][0]
+        self.assertIn("已成功删除普通管理员: `22222`", sent_text)
+        mock_persist.assert_called_once_with("telegram_admin_user_ids", "33333")
+        self.assertEqual(config["telegram_admin_user_ids"], "33333")
+
+    @patch("bot.persist_config_value")
+    async def test_add_super_admin_and_promote_regular_admin(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+        mock_update.effective_user.id = 11111
+
+        mock_context = MagicMock()
+        mock_context.args = ["22222"]
+
+        await bot.add_super_admin(mock_update, mock_context)
+
+        mock_update.message.reply_text.assert_called_once()
+        sent_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("已成功添加超级管理员: `22222`", sent_text)
+        self.assertIn("22222", config["telegram_super_admin_user_ids"])
+        self.assertNotIn("22222", config["telegram_admin_user_ids"])
+
+    @patch("bot.persist_config_value")
+    async def test_remove_admin_command_single_super_admin_blocked(self, mock_persist):
+        from bot import VPSChangeIPBot
+        from config import config
+
+        config["telegram_super_admin_user_ids"] = "11111"
+        config["telegram_admin_user_ids"] = "22222"
+
+        bot = VPSChangeIPBot()
+        mock_update = MagicMock()
+        mock_update.message = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+        mock_update.effective_user.id = 11111
+
+        mock_context = MagicMock()
+        mock_context.args = ["11111"]
+
+        await bot.remove_admin(mock_update, mock_context)
+
+        mock_update.message.reply_text.assert_called_once()
+        sent_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("超级管理员至少必须保留 1 个", sent_text)
+        mock_persist.assert_not_called()
+        self.assertEqual(config["telegram_super_admin_user_ids"], "11111")
 
 
 class TestSystemDeps(unittest.TestCase):
