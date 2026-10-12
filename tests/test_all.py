@@ -3178,6 +3178,32 @@ class TestSecurityHardening(unittest.TestCase):
                 self.assertNotIn("API_KEY", passed_env)
                 self.assertIn("PATH", passed_env)
 
+    def test_nobody_privilege_dropping_on_posix_root(self):
+        from handlers.ip_quality import run_quality_command
+        from handlers.stream_check import run_stream_command
+
+        mock_pwd = MagicMock()
+        mock_pwd.getpwnam.return_value = MagicMock()
+        with patch.dict("sys.modules", {"pwd": mock_pwd}):
+            with patch("os.name", "posix"):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.geteuid", return_value=0, create=True):
+                        with patch("subprocess.run") as mock_run:
+                            mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+                            run_quality_command("echo test", server_config={"remote_ssh_enabled": False})
+                            kwargs = mock_run.call_args[1]
+                            self.assertEqual(kwargs.get("user"), "nobody")
+                            self.assertEqual(kwargs.get("group"), "nogroup")
+                            self.assertEqual(kwargs.get("cwd"), "/tmp")
+
+                        with patch("subprocess.run") as mock_run:
+                            mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+                            run_stream_command("echo test", timeout=30, auto_input="1\n", server_config={"remote_ssh_enabled": False})
+                            kwargs = mock_run.call_args[1]
+                            self.assertEqual(kwargs.get("user"), "nobody")
+                            self.assertEqual(kwargs.get("group"), "nogroup")
+                            self.assertEqual(kwargs.get("cwd"), "/tmp")
+
 
 if __name__ == "__main__":
     unittest.main()

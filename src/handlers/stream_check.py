@@ -61,13 +61,14 @@ def run_stream_command(cmd: str, auto_input: str, timeout: int, server_config: O
     if is_remote_ssh_enabled(server_config):
         logger.info("通过远程家宽 SSH 执行流媒体解锁检测脚本")
         started = time.monotonic()
-        code, out = run_remote_ssh_command(cmd, timeout=max(30, int(timeout)), input_data=f"{auto_input.rstrip()}\n", server_config=server_config)
+        remote_cmd = f"cd /tmp && {cmd}"
+        code, out = run_remote_ssh_command(remote_cmd, timeout=max(30, int(timeout)), input_data=f"{auto_input.rstrip()}\n", server_config=server_config)
         elapsed = time.monotonic() - started
         return code, strip_ansi(out).strip(), elapsed
 
     clean_env = {
         "PATH": os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
+        "HOME": "/tmp",
         "TERM": "xterm-256color",
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
@@ -83,6 +84,18 @@ def run_stream_command(cmd: str, auto_input: str, timeout: int, server_config: O
         "input": f"{auto_input.rstrip()}\n",
         "env": clean_env,
     }
+    if os.name != "nt" and os.path.exists("/tmp"):
+        run_kwargs["cwd"] = "/tmp"
+
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        try:
+            import pwd
+            pwd.getpwnam("nobody")
+            run_kwargs["user"] = "nobody"
+            run_kwargs["group"] = "nogroup"
+        except (KeyError, ImportError, Exception) as e:
+            logger.debug(f"未找到 nobody/nogroup 用户或不支持降权: {e}")
+
     bash_path = shutil.which("bash")
     if bash_path:
         run_kwargs["executable"] = bash_path
