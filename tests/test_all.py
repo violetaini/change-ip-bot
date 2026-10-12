@@ -3143,6 +3143,41 @@ class TestSecurityHardening(unittest.TestCase):
             self.assertFalse(_PENDING_STREAM_SELECTIONS["token123"]["event"].is_set())
         _PENDING_STREAM_SELECTIONS.pop("token123", None)
 
+    def test_sanitize_command_sources_migrates_risky_floating_urls(self):
+        from config import sanitize_command_sources, DEFAULT_QUALITY_CMD, DEFAULT_STREAM_CMD, PINNED_QUALITY_COMMIT, PINNED_STREAM_COMMIT
+        cfg = {
+            "ip_quality_cmd": "bash <(curl -sL https://IP.Check.Place) -y",
+            "stream_check_cmd": "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)",
+        }
+        sanitize_command_sources(cfg)
+        self.assertEqual(cfg["ip_quality_cmd"], DEFAULT_QUALITY_CMD)
+        self.assertIn(PINNED_QUALITY_COMMIT, cfg["ip_quality_cmd"])
+        self.assertEqual(cfg["stream_check_cmd"], DEFAULT_STREAM_CMD)
+        self.assertIn(PINNED_STREAM_COMMIT, cfg["stream_check_cmd"])
+
+    def test_run_quality_and_stream_commands_clean_env(self):
+        from handlers.ip_quality import run_quality_command
+        from handlers.stream_check import run_stream_command
+
+        with patch.dict("os.environ", {"SECRET_TOKEN": "super_secret_123", "API_KEY": "secret_api_key"}):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+                run_quality_command("echo test", server_config={"remote_ssh_enabled": False})
+                mock_run.assert_called_once()
+                passed_env = mock_run.call_args[1].get("env", {})
+                self.assertNotIn("SECRET_TOKEN", passed_env)
+                self.assertNotIn("API_KEY", passed_env)
+                self.assertIn("PATH", passed_env)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+                run_stream_command("echo test", timeout=30, auto_input="1\n", server_config={"remote_ssh_enabled": False})
+                mock_run.assert_called_once()
+                passed_env = mock_run.call_args[1].get("env", {})
+                self.assertNotIn("SECRET_TOKEN", passed_env)
+                self.assertNotIn("API_KEY", passed_env)
+                self.assertIn("PATH", passed_env)
+
 
 if __name__ == "__main__":
     unittest.main()

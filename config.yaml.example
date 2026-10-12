@@ -92,13 +92,13 @@ ping_target: "1.1.1.1"
 ping_target_v6: "2606:4700:4700::1111"
 ping_count: 10
 
-# IP质量检测配置
+# IP质量检测配置（默认使用锁定 Commit SHA 的官方源，防止上游作者静默投毒或第三方短域劫持）
 ip_quality_enabled: true
-ip_quality_cmd: "bash <(curl -sL https://IP.Check.Place) -y"
+ip_quality_cmd: "bash <(curl -sL https://raw.githubusercontent.com/xykt/IPQuality/87397e2c3196ec796f5477c83343c2354df601ea/ip.sh) -y"
 
-# 流媒体解锁检测配置
+# 流媒体解锁检测配置（默认使用锁定 Commit SHA 的不可变源，防御上游恶意篡改）
 stream_check_enabled: true
-stream_check_cmd: "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
+stream_check_cmd: "bash <(curl -L -s https://raw.githubusercontent.com/1-stream/RegionRestrictionCheck/ef841d0a2910a44a6ca565e3a03de0f2282d83b3/check.sh)"
 # 自动通过 API 探测出口 IP 归属地（推荐 true；若为 false 则直接使用 stream_check_input 手动设定的模式）
 stream_check_auto_detect: true
 # 自动探测归属地 API（默认 IP.SB 高速 BGP Anycast 接口）

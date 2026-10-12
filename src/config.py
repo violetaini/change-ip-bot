@@ -2,6 +2,12 @@ import os
 import yaml
 from typing import Any, Dict, Optional
 
+PINNED_QUALITY_COMMIT = "87397e2c3196ec796f5477c83343c2354df601ea"
+PINNED_STREAM_COMMIT = "ef841d0a2910a44a6ca565e3a03de0f2282d83b3"
+
+DEFAULT_QUALITY_CMD = f"bash <(curl -sL https://raw.githubusercontent.com/xykt/IPQuality/{PINNED_QUALITY_COMMIT}/ip.sh) -y"
+DEFAULT_STREAM_CMD = f"bash <(curl -L -s https://raw.githubusercontent.com/1-stream/RegionRestrictionCheck/{PINNED_STREAM_COMMIT}/check.sh)"
+
 DEFAULT_CONFIG = {
     "telegram_allowed_user_ids": "",
     "telegram_super_admin_user_ids": "",
@@ -58,9 +64,9 @@ DEFAULT_CONFIG = {
     "ping_target_v6": "2606:4700:4700::1111",
     "ping_count": 10,
     "ip_quality_enabled": True,
-    "ip_quality_cmd": "bash <(curl -sL https://IP.Check.Place) -y",
+    "ip_quality_cmd": DEFAULT_QUALITY_CMD,
     "stream_check_enabled": True,
-    "stream_check_cmd": "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)",
+    "stream_check_cmd": DEFAULT_STREAM_CMD,
     "stream_check_input": "2",
     "stream_check_timeout": 1200,
     "stream_check_auto_detect": True,
@@ -74,6 +80,21 @@ DEFAULT_CONFIG = {
     "remote_ssh_password": "",
     "remote_ssh_timeout": 300,
 }
+
+
+def sanitize_command_sources(cfg: Dict[str, Any]) -> None:
+    """自动将旧的易遭投毒/漂移的外部脚本源平滑迁移为锁死 Commit SHA 的官方不可变源"""
+    q_cmd = str(cfg.get("ip_quality_cmd") or "").strip()
+    if "IP.Check.Place" in q_cmd or "xykt/IPQuality/main/ip.sh" in q_cmd or "xykt/IPQuality/master/ip.sh" in q_cmd:
+        cfg["ip_quality_cmd"] = DEFAULT_QUALITY_CMD
+
+    s_cmd = str(cfg.get("stream_check_cmd") or "").strip()
+    if (
+        "1-stream/RegionRestrictionCheck/raw/main/check.sh" in s_cmd
+        or "1-stream/RegionRestrictionCheck/raw/master/check.sh" in s_cmd
+        or "1-stream/RegionRestrictionCheck/main/check.sh" in s_cmd
+    ):
+        cfg["stream_check_cmd"] = DEFAULT_STREAM_CMD
 
 
 def _to_bool(value):
@@ -136,6 +157,34 @@ def load_config() -> Dict[str, Any]:
     config["ip_quality_enabled"] = _to_bool(config.get("ip_quality_enabled"))
     config["stream_check_enabled"] = _to_bool(config.get("stream_check_enabled"))
     config["_loaded_from"] = used_path
+
+    # 防投毒：自动将浮动分支/第三方短域平滑迁移至锁死 Commit SHA
+    sanitize_command_sources(config)
+    if isinstance(config.get("servers"), list):
+        for s in config["servers"]:
+            if isinstance(s, dict):
+                sanitize_command_sources(s)
+
+    # 保护配置文件只对当前所有者可读写 (POSIX 0600)
+    if used_path and os.path.exists(used_path) and os.name != "nt":
+        try:
+            os.chmod(used_path, 0o600)
+        except Exception:
+            pass
+
+    # 保护已配置的 SSH 私钥文件权限 (POSIX 0600)
+    all_key_paths = [config.get("remote_ssh_key_path")]
+    if isinstance(config.get("servers"), list):
+        for s in config["servers"]:
+            if isinstance(s, dict) and s.get("remote_ssh_key_path"):
+                all_key_paths.append(s.get("remote_ssh_key_path"))
+    for kp in all_key_paths:
+        if kp and isinstance(kp, str) and os.path.exists(kp) and os.name != "nt":
+            try:
+                os.chmod(kp, 0o600)
+            except Exception:
+                pass
+
     return config
 
 
@@ -156,6 +205,7 @@ def normalize_server_config(server_raw: Dict[str, Any], global_cfg: Dict[str, An
         merged["ip_change_provider"] = "generic"
 
     merged.pop("servers", None)
+    sanitize_command_sources(merged)
     merged["remote_ssh_enabled"] = _to_bool(merged.get("remote_ssh_enabled"))
     merged["remote_ssh_port"] = int(merged.get("remote_ssh_port") or 22)
     merged["ip_change_interval"] = int(merged.get("ip_change_interval") or 2)

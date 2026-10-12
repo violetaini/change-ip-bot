@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import shlex
 import shutil
@@ -12,7 +13,7 @@ import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import config, is_multi_server_mode
+from config import config, is_multi_server_mode, DEFAULT_STREAM_CMD
 from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
@@ -20,7 +21,6 @@ from utils.redact import redact_text
 from utils.task_locks import get_task_lock
 
 
-DEFAULT_STREAM_CMD = "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
 DEFAULT_STREAM_API = "https://api.ip.sb/geoip?callback=getgeoip"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -65,6 +65,14 @@ def run_stream_command(cmd: str, auto_input: str, timeout: int, server_config: O
         elapsed = time.monotonic() - started
         return code, strip_ansi(out).strip(), elapsed
 
+    clean_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "TERM": "xterm-256color",
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
+    }
+
     run_kwargs = {
         "shell": True,
         "capture_output": True,
@@ -73,6 +81,7 @@ def run_stream_command(cmd: str, auto_input: str, timeout: int, server_config: O
         "errors": "replace",
         "timeout": max(30, int(timeout)),
         "input": f"{auto_input.rstrip()}\n",
+        "env": clean_env,
     }
     bash_path = shutil.which("bash")
     if bash_path:

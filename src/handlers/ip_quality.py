@@ -12,14 +12,13 @@ from PIL import Image
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import config, is_multi_server_mode
+from config import config, is_multi_server_mode, DEFAULT_QUALITY_CMD
 from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
 from utils.redact import redact_text
 from utils.task_locks import get_task_lock
 
-DEFAULT_QUALITY_CMD = "bash <(curl -sL https://IP.Check.Place) -y"
 SVG_URL_RE = re.compile(r'https?://[^\s"\'<>]+\.svg(?:\?[^\s"\'<>]*)?', re.IGNORECASE)
 
 
@@ -29,11 +28,20 @@ def run_quality_command(cmd: str, server_config: Optional[Dict[str, Any]] = None
         logger.info("通过远程家宽 SSH 执行 IP 质量检测脚本")
         return run_remote_ssh_command(cmd, timeout=900, server_config=server_config)
 
+    clean_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "TERM": "xterm-256color",
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
+    }
+
     run_kwargs = {
         "shell": True,
         "capture_output": True,
         "text": True,
         "timeout": 900,
+        "env": clean_env,
     }
     bash_path = shutil.which("bash")
     if bash_path:
