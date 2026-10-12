@@ -92,6 +92,11 @@ def save_state(data: Dict[str, Any]) -> None:
         try:
             with open(temp_target, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            if os.name != "nt":
+                try:
+                    os.chmod(temp_target, 0o600)
+                except Exception:
+                    pass
             os.replace(temp_target, target)
         except Exception:
             if os.path.exists(temp_target):
