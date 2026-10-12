@@ -3082,6 +3082,68 @@ class TestTaskMutexLocksAsync(unittest.IsolatedAsyncioTestCase):
             lock.release()
 
 
+
+class TestSecurityHardening(unittest.TestCase):
+    def test_ssh_user_validation_rejects_flags_and_special_chars(self):
+        from utils.remote_ssh import build_ssh_command_prefix
+
+        # Valid users
+        valid_cfg = {"user": "ubuntu", "host": "1.2.3.4", "port": 22}
+        prefix = build_ssh_command_prefix(valid_cfg)
+        self.assertIn("ubuntu@1.2.3.4", prefix)
+
+        valid_cfg2 = {"user": "app-user_01.prod", "host": "1.2.3.4", "port": 22}
+        prefix2 = build_ssh_command_prefix(valid_cfg2)
+        self.assertIn("app-user_01.prod@1.2.3.4", prefix2)
+
+        # Invalid users with leading dashes or special characters
+        for bad_user in ("-oProxyCommand=calc", "-F/etc/passwd", "user;rm -rf", "user&calc", "user`calc`", "user$PATH", "user name"):
+            bad_cfg = {"user": bad_user, "host": "1.2.3.4", "port": 22}
+            with self.assertRaises(ValueError):
+                build_ssh_command_prefix(bad_cfg)
+
+    def test_probe_domestic_http_subprocess_list(self):
+        from utils.network import probe_domestic_http
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="200|0.050")
+            ok, desc, ms = probe_domestic_http("119.29.29.29", 4, domain="v.qq.com", retries=1)
+            self.assertTrue(ok)
+            self.assertEqual(ms, 50)
+            mock_run.assert_called_once()
+            called_args = mock_run.call_args[0][0]
+            self.assertIsInstance(called_args, list)
+            self.assertEqual(called_args[0], "curl")
+            # Ensure shell=True was NOT passed
+            called_kwargs = mock_run.call_args[1]
+            self.assertFalse(called_kwargs.get("shell", False))
+
+    def test_redact_text_masks_multi_server_credentials(self):
+        from utils.redact import redact_text
+        server_secret = "secret_token_server_999888"
+        server_pwd = "my_custom_ssh_password_123"
+        with patch("config.get_servers", return_value=[{"id": "s1", "boil_api_token": server_secret, "remote_ssh_password": server_pwd}]):
+            raw = f"Server credentials are {server_secret} and server password is {server_pwd}"
+            redacted = redact_text(raw)
+            self.assertNotIn(server_secret, redacted)
+            self.assertNotIn(server_pwd, redacted)
+            self.assertIn("<redacted:boil_api_token>", redacted)
+            self.assertIn("<redacted:remote_ssh_password>", redacted)
+
+    def test_stream_select_callback_permission_denied(self):
+        from handlers.stream_check import stream_select_callback, _PENDING_STREAM_SELECTIONS
+        mock_update = MagicMock()
+        mock_update.callback_query.data = "stream_sel:s1:token123:1"
+        mock_update.callback_query.answer = AsyncMock()
+
+        _PENDING_STREAM_SELECTIONS["token123"] = {"selected_input": None, "event": asyncio.Event()}
+        with patch("handlers.stream_check.check_user_permission", new=AsyncMock(return_value=False)):
+            asyncio.run(stream_select_callback(mock_update, MagicMock()))
+            # Since permission was denied, event should not be set and state should remain unchanged
+            self.assertIsNone(_PENDING_STREAM_SELECTIONS["token123"]["selected_input"])
+            self.assertFalse(_PENDING_STREAM_SELECTIONS["token123"]["event"].is_set())
+        _PENDING_STREAM_SELECTIONS.pop("token123", None)
+
+
 if __name__ == "__main__":
     unittest.main()
 

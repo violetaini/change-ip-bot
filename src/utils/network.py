@@ -149,13 +149,31 @@ def probe_domestic_http(
     if not re.match(r"^[0-9a-fA-F.:\[\]]+$", clean_target) or not re.match(r"^[a-zA-Z0-9.-]+$", clean_domain):
         return False, "无效的探测目标或域名", 0
 
-    cmd_flag = "-6" if ip_version == 6 else ""
+    cmd_flag = " -6" if ip_version == 6 else ""
     ip_fmt = f"[{clean_target}]" if ip_version == 6 and not (clean_target.startswith("[") and clean_target.endswith("]")) else clean_target
     curl_cmd = (
-        f"curl {cmd_flag} -s -I --connect-timeout {timeout} -m {timeout + 2} "
-        f"--resolve {domain}:443:{ip_fmt} https://{domain} -o /dev/null "
+        f"curl{cmd_flag} -s -I --connect-timeout {timeout} -m {timeout + 2} "
+        f"--resolve {clean_domain}:443:{ip_fmt} https://{clean_domain} -o /dev/null "
         f'-w "%{{http_code}}|%{{time_connect}}"'
     )
+    curl_args = ["curl"]
+    if ip_version == 6:
+        curl_args.append("-6")
+    curl_args.extend([
+        "-s",
+        "-I",
+        "--connect-timeout",
+        str(timeout),
+        "-m",
+        str(timeout + 2),
+        "--resolve",
+        f"{clean_domain}:443:{ip_fmt}",
+        f"https://{clean_domain}",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}|%{time_connect}",
+    ])
 
     for attempt in range(1, retries + 1):
         try:
@@ -163,8 +181,7 @@ def probe_domestic_http(
                 code, out = run_ssh_fn(curl_cmd, timeout=timeout + 5)
             else:
                 res = subprocess.run(
-                    curl_cmd,
-                    shell=True,
+                    curl_args,
                     capture_output=True,
                     text=True,
                     timeout=timeout + 5,

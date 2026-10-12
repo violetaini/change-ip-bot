@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -419,7 +420,7 @@ def detect_ip_country_code(server_config: Optional[Dict[str, Any]] = None) -> Op
 
     try:
         if is_remote_ssh_enabled(server_config):
-            cmd = f'curl -s -m {api_timeout} "{url}"'
+            cmd = f"curl -s -m {api_timeout} {shlex.quote(url)}"
             code, out = run_remote_ssh_command(cmd, timeout=api_timeout + 5, server_config=server_config)
             if code == 0 and out:
                 return parse_country_code_from_response(out)
@@ -442,6 +443,8 @@ _PENDING_STREAM_SELECTIONS: Dict[str, Dict[str, Any]] = {}
 async def stream_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not query.data:
+        return
+    if not await check_user_permission(update):
         return
     await query.answer()
 

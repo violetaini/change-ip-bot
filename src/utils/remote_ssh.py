@@ -153,6 +153,8 @@ def build_ssh_command_prefix(ssh_cfg: Dict[str, Any]) -> list[str]:
         cmd.extend(["-o", "BatchMode=yes"])
 
     user = str(ssh_cfg.get("user") or "root").strip()
+    if user.startswith("-") or not re.match(r"^[a-zA-Z0-9_.-]+$", user):
+        raise ValueError(f"非法的 SSH 用户名: {user}")
     host = str(ssh_cfg.get("host") or "").strip()
     if host.startswith("-"):
         raise ValueError(f"非法的 SSH 目标主机: {host}")

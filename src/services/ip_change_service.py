@@ -2,6 +2,7 @@ import asyncio
 import datetime as dt
 import ipaddress
 import json
+import shlex
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -300,7 +301,7 @@ async def _perform_generic_ip_change(server_config: Optional[Dict[str, Any]] = N
     if is_remote_ssh_enabled(cfg) and is_private_api:
         logger.info(f"[{sname} Generic通用模式] 换IP API为内网地址 ({api_url})，通过远程 SSH 隧道在家宽内部执行 curl 触发...")
         try:
-            cmd = f"curl -s -m 10 '{api_url}'"
+            cmd = f"curl -s -m 10 {shlex.quote(api_url)}"
             code, out = await asyncio.to_thread(
                 run_remote_ssh_command,
                 cmd,
@@ -416,7 +417,7 @@ async def _perform_fachost_ip_change(server_config: Optional[Dict[str, Any]] = N
             timeout_sec = int(cfg.get("ip_change_timeout", 600))
             code, out = await asyncio.to_thread(
                 run_remote_ssh_command,
-                f"curl -s -m {timeout_sec} '{api_url}'",
+                f"curl -s -m {timeout_sec} {shlex.quote(api_url)}",
                 timeout=timeout_sec + 10,
                 allow_retry_on_ip_change=False,
                 server_config=cfg,

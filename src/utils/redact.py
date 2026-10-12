@@ -14,27 +14,34 @@ def redact_text(text: str) -> str:
 
     try:
         from config import config
+        configs_to_check = [config]
+        try:
+            from config import get_servers
+            configs_to_check.extend(get_servers())
+        except Exception:
+            pass
 
-        for key in (
-            "telegram_bot_token",
-            "ip_change_api",
-            "boil_api_token",
-            "huawei_ak",
-            "huawei_sk",
-            "cloudflare_api_token",
-            "aliyun_access_key_id",
-            "aliyun_access_key_secret",
-            "dnspod_login_token",
-            "godaddy_api_key",
-            "godaddy_api_secret",
-            "porkbun_api_key",
-            "porkbun_secret_api_key",
-            "digitalocean_token",
-            "remote_ssh_password",
-        ):
-            value = str(config.get(key, "") or "").strip()
-            if len(value) >= 6:
-                redacted = redacted.replace(value, f"<redacted:{key}>")
+        for cfg in configs_to_check:
+            for key in (
+                "telegram_bot_token",
+                "ip_change_api",
+                "boil_api_token",
+                "huawei_ak",
+                "huawei_sk",
+                "cloudflare_api_token",
+                "aliyun_access_key_id",
+                "aliyun_access_key_secret",
+                "dnspod_login_token",
+                "godaddy_api_key",
+                "godaddy_api_secret",
+                "porkbun_api_key",
+                "porkbun_secret_api_key",
+                "digitalocean_token",
+                "remote_ssh_password",
+            ):
+                value = str(cfg.get(key, "") or "").strip()
+                if len(value) >= 6:
+                    redacted = redacted.replace(value, f"<redacted:{key}>")
     except Exception:
         pass
 
