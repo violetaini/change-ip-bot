@@ -215,8 +215,17 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     msg = update.message or (update.callback_query.message if update.callback_query else None)
     if not config.get("ip_quality_enabled", True):
+        disabled_text = "IP 质量检测未启用。"
+        query = getattr(update, "callback_query", None)
+        menu_k = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
+        if query and query.message:
+            try:
+                await query.edit_message_text(disabled_text, reply_markup=menu_k)
+                return
+            except Exception:
+                pass
         if msg:
-            await msg.reply_text("IP 质量检测未启用。")
+            await msg.reply_text(disabled_text, reply_markup=menu_k)
         return
 
     user_id = update.effective_user.id if update.effective_user else 0
@@ -233,16 +242,17 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     sid = cfg.get("id", "default")
     sname = cfg.get("name", sid)
 
+    quality_back_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 重新检测质量", callback_data="main_menu:quality"),
+            InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+        ]
+    ])
+
     lock = get_task_lock("quality", sid)
     if lock.locked():
         prefix = f"【{sname}】" if is_multi_server_mode() else ""
         notice = f"⚠️ {prefix}当前已有正在运行的【IP 质量检测】任务（预计耗时 1~3 分钟），请勿重复发起，请等待完成后再试。"
-        quality_back_markup = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔄 重新检测质量", callback_data="main_menu:quality"),
-                InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
-            ]
-        ])
         query = getattr(update, "callback_query", None)
         if query and query.message:
             try:
@@ -300,11 +310,18 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             svg_urls = extract_svg_urls(output)
             if not svg_urls:
                 preview = output[-3000:] if output else "无输出"
-                await msg.reply_text(
-                    text="IP 质量检测完成，但没有识别到 SVG 链接。\n"
-                         f"命令返回码：{return_code}\n\n"
-                         f"最近输出：\n{redact_text(preview)}"
+                err_text = (
+                    "IP 质量检测完成，但没有识别到 SVG 链接。\n"
+                    f"命令返回码：{return_code}\n\n"
+                    f"最近输出：\n{redact_text(preview)}"
                 )
+                if query and query.message:
+                    try:
+                        await query.edit_message_text(err_text, reply_markup=quality_back_markup)
+                        return
+                    except Exception:
+                        pass
+                await msg.reply_text(text=err_text, reply_markup=quality_back_markup)
                 return
 
             tmp_dir = tempfile.mkdtemp(prefix="ip_quality_")
@@ -342,10 +359,16 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             prefix = f"【{sname}】" if is_multi_server_mode() else ""
             if len(successful_items) == 1:
                 item = successful_items[0]
+                if query and query.message:
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
                 with open(item["jpg_path"], "rb") as f:
                     await msg.reply_photo(
                         photo=f,
                         caption=f"{prefix}【{item['label']}】IP 质量检测完成，图片预览已附上。\n🔗 原始报告: {item['url']}",
+                        reply_markup=quality_back_markup,
                     )
             elif len(successful_items) > 1:
                 from telegram import InputMediaPhoto
@@ -360,13 +383,28 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             caption=f"{prefix}【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
                         ))
                     await msg.reply_media_group(media=media)
+                    fin_text = f"✅ {prefix}【双栈】IP 质量检测报告已发送，请查阅上方图片。"
+                    if query and query.message:
+                        try:
+                            await query.edit_message_text(fin_text, reply_markup=quality_back_markup)
+                        except Exception:
+                            await msg.reply_text(fin_text, reply_markup=quality_back_markup)
+                    else:
+                        await msg.reply_text(fin_text, reply_markup=quality_back_markup)
                 except Exception as mg_err:
                     logger.warning(f"发送媒体组失败，降级为逐张发送: {mg_err}")
-                    for item in successful_items:
+                    if query and query.message:
+                        try:
+                            await query.message.delete()
+                        except Exception:
+                            pass
+                    for idx, item in enumerate(successful_items):
+                        markup = quality_back_markup if idx == len(successful_items) - 1 else None
                         with open(item["jpg_path"], "rb") as f:
                             await msg.reply_photo(
                                 photo=f,
                                 caption=f"{prefix}【{item['label']}】IP 质量检测报告\n🔗 原始报告: {item['url']}",
+                                reply_markup=markup,
                             )
                 finally:
                     for f in files_to_close:
@@ -375,15 +413,43 @@ async def ip_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         except Exception:
                             pass
 
-            for item in failed_items:
-                await msg.reply_text(
+            if failed_items and not successful_items:
+                fail_lines = [
                     f"{prefix}【{item['label']}】图片渲染失败（{redact_text(item['error'])}），已自动降级为报告链接：\n🔗 {item['url']}"
-                )
+                    for item in failed_items
+                ]
+                fail_text = "\n\n".join(fail_lines)
+                if query and query.message:
+                    try:
+                        await query.edit_message_text(fail_text, reply_markup=quality_back_markup)
+                    except Exception:
+                        await msg.reply_text(fail_text, reply_markup=quality_back_markup)
+                else:
+                    await msg.reply_text(fail_text, reply_markup=quality_back_markup)
+            elif failed_items:
+                for item in failed_items:
+                    await msg.reply_text(
+                        f"{prefix}【{item['label']}】图片渲染失败（{redact_text(item['error'])}），已自动降级为报告链接：\n🔗 {item['url']}"
+                    )
         except subprocess.TimeoutExpired:
-            await msg.reply_text(f"{prefix}IP 质量检测超时，请稍后再试。")
+            tout_text = f"{prefix}IP 质量检测超时，请稍后再试。"
+            if query and query.message:
+                try:
+                    await query.edit_message_text(tout_text, reply_markup=quality_back_markup)
+                except Exception:
+                    await msg.reply_text(tout_text, reply_markup=quality_back_markup)
+            else:
+                await msg.reply_text(tout_text, reply_markup=quality_back_markup)
         except Exception as e:
             logger.exception(f"【{sname}】IP 质量检测失败: {e}")
-            await msg.reply_text(f"{prefix}IP 质量检测失败：{redact_text(str(e))}")
+            err_text = f"{prefix}IP 质量检测失败：{redact_text(str(e))}"
+            if query and query.message:
+                try:
+                    await query.edit_message_text(err_text, reply_markup=quality_back_markup)
+                except Exception:
+                    await msg.reply_text(err_text, reply_markup=quality_back_markup)
+            else:
+                await msg.reply_text(err_text, reply_markup=quality_back_markup)
         finally:
             if tmp_dir and os.path.isdir(tmp_dir):
                 try:

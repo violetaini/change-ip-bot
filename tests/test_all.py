@@ -2873,6 +2873,85 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("main_menu:refresh", callbacks_cb)
         self.assertIn("main_menu:stream_region", callbacks_cb)
 
+    async def test_change_ip_in_place_edit_and_back_button(self):
+        from handlers.ip_change import change_ip_handler
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = []
+
+        with patch("handlers.ip_change.do_change_single_server", new_callable=AsyncMock) as mock_do_change:
+            from services.ip_change_service import ChangeResult
+            mock_do_change.return_value = ChangeResult(
+                success=True,
+                status="OK",
+                message="换IP成功",
+                old_ip="1.1.1.1",
+                new_ip="2.2.2.2",
+            )
+            await change_ip_handler(mock_update, mock_context)
+            # 验证第一次编辑为 loading 提示，第二次编辑为最终结果带返回按钮
+            self.assertGreaterEqual(mock_update.callback_query.edit_message_text.call_count, 1)
+            # 获取最后一次 edit_text 调用
+            final_call = mock_update.callback_query.message.edit_text.call_args or mock_update.callback_query.edit_message_text.call_args
+            self.assertIsNotNone(final_call)
+            kwargs = final_call[1]
+            markup = kwargs.get("reply_markup")
+            self.assertIsNotNone(markup)
+            callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+            self.assertIn("main_menu:refresh", callbacks)
+            self.assertIn("main_menu:change", callbacks)
+
+    async def test_change_ip_lock_collision_in_place(self):
+        from handlers.ip_change import change_ip_handler
+        from utils.task_locks import get_task_lock
+        lock = get_task_lock("change", "default")
+        await lock.acquire()
+        try:
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+            mock_context = MagicMock()
+            mock_context.args = []
+
+            await change_ip_handler(mock_update, mock_context)
+            mock_update.callback_query.edit_message_text.assert_called_once()
+            args, kwargs = mock_update.callback_query.edit_message_text.call_args
+            self.assertIn("正在运行", args[0])
+            markup = kwargs.get("reply_markup")
+            self.assertIsNotNone(markup)
+            callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+            self.assertIn("main_menu:refresh", callbacks)
+        finally:
+            lock.release()
+
+    async def test_ip_quality_in_place_edit_and_back_button(self):
+        from handlers.ip_quality import ip_quality_handler
+        mock_update = MagicMock()
+        mock_update.message = None
+        mock_update.effective_user.id = 11111
+        mock_update.callback_query.message = MagicMock()
+        mock_update.callback_query.edit_message_text = AsyncMock()
+        mock_context = MagicMock()
+        mock_context.args = []
+
+        with patch("handlers.ip_quality.run_quality_command", return_value=(0, "无SVG输出")):
+            await ip_quality_handler(mock_update, mock_context)
+            # 无 SVG 链接时就地编辑提示并提供返回主菜单按钮
+            self.assertGreaterEqual(mock_update.callback_query.edit_message_text.call_count, 1)
+            final_call = mock_update.callback_query.edit_message_text.call_args
+            kwargs = final_call[1]
+            markup = kwargs.get("reply_markup")
+            self.assertIsNotNone(markup)
+            callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+            self.assertIn("main_menu:refresh", callbacks)
+            self.assertIn("main_menu:quality", callbacks)
+
 
 class TestTaskMutexLocksAsync(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

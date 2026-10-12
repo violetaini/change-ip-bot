@@ -182,16 +182,17 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = cfg.get("id", "default")
     sname = cfg.get("name", sid)
 
+    ping_back_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🏓 再次Ping", callback_data="main_menu:ping"),
+            InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+        ]
+    ])
+
     lock = get_task_lock("ping", sid)
     if lock.locked():
         prefix = f"【{sname}】" if is_multi_server_mode() else ""
         notice = f"⚠️ {prefix}当前已有正在运行的【Ping 延迟测试】任务，请勿重复发起，请等待完成后再试。"
-        ping_back_markup = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🏓 再次Ping", callback_data="main_menu:ping"),
-                InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
-            ]
-        ])
         query = getattr(update, "callback_query", None)
         if query and query.message:
             try:
@@ -212,14 +213,20 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             args, default_v4=default_v4, default_v6=default_v6, default_count=default_count
         )
 
+        query = getattr(update, "callback_query", None)
         if not target or not is_valid_ping_target(target):
-            await msg.reply_text(warning or "无效的目标地址，仅支持合法 IP 地址或域名")
+            err_msg = warning or "无效的目标地址，仅支持合法 IP 地址或域名"
+            if query and query.message:
+                try:
+                    await query.edit_message_text(err_msg, reply_markup=ping_back_markup)
+                    return
+                except Exception:
+                    pass
+            await msg.reply_text(err_msg, reply_markup=ping_back_markup)
             return
 
-        if warning:
+        if warning and not query:
             await msg.reply_text(warning)
-
-        query = getattr(update, "callback_query", None)
         try:
             from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
             prefix = f"【{sname}】" if is_multi_server_mode() else ""

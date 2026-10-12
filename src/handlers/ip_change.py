@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any, Dict, Optional
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import get_servers, is_multi_server_mode
@@ -15,6 +15,7 @@ from services.ip_change_service import (
 )
 from utils.logger import logger
 from utils.state import mark_notification_sent, mark_sending_notify
+from utils.task_locks import get_task_lock
 
 
 async def do_change_single_server(server_cfg: Optional[Dict[str, Any]], chat_id: str = "") -> ChangeResult:
@@ -39,13 +40,30 @@ async def change_ip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id_str = str(update.effective_chat.id) if update.effective_chat else ""
+    query = getattr(update, "callback_query", None)
+
+    change_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 重新换IP", callback_data="main_menu:change"),
+            InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+        ]
+    ])
 
     if is_all:
         servers = get_servers()
-        await msg.reply_text(
+        ack_text = (
             f"已收到全部 {len(servers)} 台服务器换IP请求，开始并行执行...\n"
             "网络可能会短暂中断；如果结果当时发不出去，机器人恢复后会自动补发。"
         )
+        if query and query.message:
+            try:
+                await query.edit_message_text(ack_text)
+                status_msg = query.message
+            except Exception:
+                status_msg = await msg.reply_text(ack_text)
+        else:
+            status_msg = await msg.reply_text(ack_text)
+
         tasks = [do_change_single_server(s, chat_id=chat_id_str) for s in servers]
         results = await asyncio.gather(*tasks)
         lines = ["🌐【全部服务器换IP执行结果】"]
@@ -59,7 +77,11 @@ async def change_ip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             for s in servers:
                 mark_sending_notify(True, server_id=s["id"])
-            await msg.reply_text("\n".join(lines))
+            final_text = "\n".join(lines)
+            try:
+                await status_msg.edit_text(final_text, reply_markup=change_markup)
+            except Exception:
+                await msg.reply_text(final_text, reply_markup=change_markup)
             for s in servers:
                 mark_notification_sent(server_id=s["id"])
         except Exception as e:
@@ -69,6 +91,20 @@ async def change_ip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         sid = server_cfg.get("id", "default")
         sname = server_cfg.get("name", sid)
+
+        lock = get_task_lock("change", sid)
+        if lock.locked():
+            prefix = f"【{sname}】" if is_multi_server_mode() else ""
+            notice = f"⚠️ {prefix}当前已有正在运行的【更换 IP】任务，请勿重复发起，请稍候。"
+            if query and query.message:
+                try:
+                    await query.edit_message_text(notice, reply_markup=change_markup)
+                    return
+                except Exception:
+                    pass
+            await msg.reply_text(notice, reply_markup=change_markup)
+            return
+
         if is_multi_server_mode():
             ack_text = (
                 f"已收到服务器 [{sname}] 换IP请求，马上开始执行。\n"
@@ -79,7 +115,16 @@ async def change_ip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "已收到换IP请求，马上开始执行。\n"
                 "网络可能会短暂中断；如果结果当时发不出去，机器人恢复后会自动补发。"
             )
-        await msg.reply_text(ack_text)
+
+        if query and query.message:
+            try:
+                await query.edit_message_text(ack_text)
+                status_msg = query.message
+            except Exception:
+                status_msg = await msg.reply_text(ack_text)
+        else:
+            status_msg = await msg.reply_text(ack_text)
+
         res = await do_change_single_server(server_cfg, chat_id=chat_id_str)
         try:
             mark_sending_notify(True, server_id=sid)
@@ -87,7 +132,11 @@ async def change_ip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hint = ""
             if is_multi_server_mode():
                 hint = f"\n\n💡 提示: 当前操作服务器为 [{sname}]，输入 /servers 查看列表，/use 切换"
-            await msg.reply_text(text + hint)
+            final_text = text + hint
+            try:
+                await status_msg.edit_text(final_text, reply_markup=change_markup)
+            except Exception:
+                await msg.reply_text(final_text, reply_markup=change_markup)
             mark_notification_sent(server_id=sid)
         except Exception as e:
             logger.warning(f"发送换IP结果失败，将等待恢复后补发: {e}")

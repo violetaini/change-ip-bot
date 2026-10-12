@@ -662,9 +662,18 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if not config.get("stream_check_enabled", True):
+        disabled_text = "流媒体检测未启用。"
+        query = getattr(update, "callback_query", None)
+        menu_k = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
+        if query and query.message:
+            try:
+                await query.edit_message_text(disabled_text, reply_markup=menu_k)
+                return
+            except Exception:
+                pass
         msg = update.message or (update.callback_query.message if update.callback_query else None)
         if msg:
-            await msg.reply_text("流媒体检测未启用。")
+            await msg.reply_text(disabled_text, reply_markup=menu_k)
         return
 
     user_id = update.effective_user.id if update.effective_user else 0
