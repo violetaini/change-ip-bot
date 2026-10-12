@@ -12,6 +12,7 @@ from config import config, is_multi_server_mode
 from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
+from utils.task_locks import get_task_lock
 
 
 def is_valid_ping_target(target: str) -> bool:
@@ -181,90 +182,111 @@ async def ping_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sid = cfg.get("id", "default")
     sname = cfg.get("name", sid)
 
-    default_v4 = str(cfg.get("ping_target", "1.1.1.1")).strip() or "1.1.1.1"
-    default_v6 = str(cfg.get("ping_target_v6", "2606:4700:4700::1111")).strip() or "2606:4700:4700::1111"
-    default_count = int(cfg.get("ping_count", 10))
-
-    args = list(context.args) if context.args else []
-    target, count, ip_version, warning = parse_ping_params(
-        args, default_v4=default_v4, default_v6=default_v6, default_count=default_count
-    )
-
-    if not target or not is_valid_ping_target(target):
-        await msg.reply_text(warning or "无效的目标地址，仅支持合法 IP 地址或域名")
-        return
-
-    if warning:
-        await msg.reply_text(warning)
-
-    query = getattr(update, "callback_query", None)
-    try:
-        from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
+    lock = get_task_lock("ping", sid)
+    if lock.locked():
         prefix = f"【{sname}】" if is_multi_server_mode() else ""
-        if is_remote_ssh_enabled(server_cfg):
-            ssh_cfg = get_ssh_config(server_config=server_cfg)
-            ping_notice = f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
-            if query and query.message:
-                try:
-                    await query.edit_message_text(ping_notice)
-                except Exception:
-                    await msg.reply_text(ping_notice)
-            else:
-                await msg.reply_text(ping_notice)
-            ping_cmd_str = f"ping -{ip_version} -c {count} {target}"
-            code, output = await asyncio.to_thread(run_remote_ssh_command, ping_cmd_str, timeout=300, server_config=server_cfg)
-        else:
-            ping_notice = f"正在{prefix}ping {target} (IPv{ip_version}, {count} 次)..."
-            if query and query.message:
-                try:
-                    await query.edit_message_text(ping_notice)
-                except Exception:
-                    await msg.reply_text(ping_notice)
-            else:
-                await msg.reply_text(ping_notice)
-            ping_cmd = (
-                ["ping", f"-{ip_version}", "-n", str(count), target]
-                if os.name == "nt"
-                else ["ping", f"-{ip_version}", "-c", str(count), target]
-            )
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ping_cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            output = f"{result.stdout}\n{result.stderr}"
-
-        prefix = f"【{sname}】" if is_multi_server_mode() else ""
-        message = prefix + format_ping_result(target, ip_version, output)
+        notice = f"⚠️ {prefix}当前已有正在运行的【Ping 延迟测试】任务，请勿重复发起，请等待完成后再试。"
         ping_back_markup = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🏓 再次Ping", callback_data="main_menu:ping"),
                 InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
             ]
         ])
+        query = getattr(update, "callback_query", None)
         if query and query.message:
             try:
-                await query.edit_message_text(message, reply_markup=ping_back_markup)
+                await query.edit_message_text(notice, reply_markup=ping_back_markup)
             except Exception:
+                await msg.reply_text(notice, reply_markup=ping_back_markup)
+        else:
+            await msg.reply_text(notice, reply_markup=ping_back_markup)
+        return
+
+    async with lock:
+        default_v4 = str(cfg.get("ping_target", "1.1.1.1")).strip() or "1.1.1.1"
+        default_v6 = str(cfg.get("ping_target_v6", "2606:4700:4700::1111")).strip() or "2606:4700:4700::1111"
+        default_count = int(cfg.get("ping_count", 10))
+
+        args = list(context.args) if context.args else []
+        target, count, ip_version, warning = parse_ping_params(
+            args, default_v4=default_v4, default_v6=default_v6, default_count=default_count
+        )
+
+        if not target or not is_valid_ping_target(target):
+            await msg.reply_text(warning or "无效的目标地址，仅支持合法 IP 地址或域名")
+            return
+
+        if warning:
+            await msg.reply_text(warning)
+
+        query = getattr(update, "callback_query", None)
+        try:
+            from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
+            prefix = f"【{sname}】" if is_multi_server_mode() else ""
+            if is_remote_ssh_enabled(server_cfg):
+                ssh_cfg = get_ssh_config(server_config=server_cfg)
+                ping_notice = f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) ping {target} (IPv{ip_version}, {count} 次)..."
+                if query and query.message:
+                    try:
+                        await query.edit_message_text(ping_notice)
+                    except Exception:
+                        await msg.reply_text(ping_notice)
+                else:
+                    await msg.reply_text(ping_notice)
+                ping_cmd_str = f"ping -{ip_version} -c {count} {target}"
+                code, output = await asyncio.to_thread(run_remote_ssh_command, ping_cmd_str, timeout=300, server_config=server_cfg)
+            else:
+                ping_notice = f"正在{prefix}ping {target} (IPv{ip_version}, {count} 次)..."
+                if query and query.message:
+                    try:
+                        await query.edit_message_text(ping_notice)
+                    except Exception:
+                        await msg.reply_text(ping_notice)
+                else:
+                    await msg.reply_text(ping_notice)
+                ping_cmd = (
+                    ["ping", f"-{ip_version}", "-n", str(count), target]
+                    if os.name == "nt"
+                    else ["ping", f"-{ip_version}", "-c", str(count), target]
+                )
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ping_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                output = f"{result.stdout}\n{result.stderr}"
+
+            prefix = f"【{sname}】" if is_multi_server_mode() else ""
+            message = prefix + format_ping_result(target, ip_version, output)
+            ping_back_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🏓 再次Ping", callback_data="main_menu:ping"),
+                    InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+                ]
+            ])
+            if query and query.message:
+                try:
+                    await query.edit_message_text(message, reply_markup=ping_back_markup)
+                except Exception:
+                    await msg.reply_text(message, reply_markup=ping_back_markup)
+            else:
                 await msg.reply_text(message, reply_markup=ping_back_markup)
-        else:
-            await msg.reply_text(message, reply_markup=ping_back_markup)
-    except subprocess.TimeoutExpired:
-        if query and query.message:
-            try:
-                await query.edit_message_text("Ping 超时", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
-            except Exception:
-                await msg.reply_text("Ping 超时", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
-        else:
-            await msg.reply_text("Ping 超时")
-    except Exception as e:
-        if query and query.message:
-            try:
-                await query.edit_message_text(f"执行 ping 时出错: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
-            except Exception:
-                await msg.reply_text(f"执行 ping 时出错: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
-        else:
-            await msg.reply_text(f"执行 ping 时出错: {str(e)}")
+        except subprocess.TimeoutExpired:
+            if query and query.message:
+                try:
+                    await query.edit_message_text("Ping 超时", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+                except Exception:
+                    await msg.reply_text("Ping 超时", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+            else:
+                await msg.reply_text("Ping 超时")
+        except Exception as e:
+            if query and query.message:
+                try:
+                    await query.edit_message_text(f"执行 ping 时出错: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+                except Exception:
+                    await msg.reply_text(f"执行 ping 时出错: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+            else:
+                await msg.reply_text(f"执行 ping 时出错: {str(e)}")
 

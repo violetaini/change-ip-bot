@@ -10,6 +10,7 @@ from config import get_server_config, is_multi_server_mode
 from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
+from utils.task_locks import get_task_lock
 
 
 async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,6 +32,21 @@ async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sname = server_cfg.get("name", sid)
     if context.user_data is not None:
         context.user_data["speedtest_target_server_id"] = sid
+
+    lock = get_task_lock("speedtest", sid)
+    if lock.locked():
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+        notice = f"⚠️ {prefix}当前已有正在运行的【网络测速】任务，请勿重复发起，请等待测速完成后再试。"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
+        query = getattr(update, "callback_query", None)
+        if query and query.message:
+            try:
+                await query.edit_message_text(notice, reply_markup=markup)
+            except Exception:
+                await msg.reply_text(notice, reply_markup=markup)
+        else:
+            await msg.reply_text(notice, reply_markup=markup)
+        return
 
     from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
 
@@ -173,42 +189,64 @@ async def speedtest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     target_sid = context.user_data.get("speedtest_target_server_id") if context.user_data else None
     server_cfg = get_server_config(target_sid)
-    sname = server_cfg.get("name", server_cfg.get("id", "默认服务器")) if server_cfg else ""
+    sid = server_cfg.get("id", "default") if server_cfg else "default"
+    sname = server_cfg.get("name", sid) if server_cfg else ""
 
-    from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
-
-    try:
+    lock = get_task_lock("speedtest", sid)
+    if lock.locked():
         prefix = f"【{sname}】" if is_multi_server_mode() else ""
-        if is_remote_ssh_enabled(server_cfg):
-            cfg = get_ssh_config(server_config=server_cfg)
-            await query.edit_message_text(f"正在通过{prefix}远程 SSH ({cfg['host']}) 进行测速...\n这可能需要 1~2 分钟...")
-            cmd_str = f"speedtest {'-s ' + ookla_server_id if ookla_server_id != 'auto' else ''} --accept-license --accept-gdpr --format=json"
-            code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=600, server_config=server_cfg)
-            try:
-                data = json.loads(output)
-            except json.JSONDecodeError:
-                await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{output[:3000]}")
-                return
-        else:
-            await query.edit_message_text(f"正在进行{prefix}测速...\n这可能需要几分钟时间...")
-            result = await asyncio.to_thread(
-                subprocess.run,
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            try:
-                data = json.loads(result.stdout)
-            except json.JSONDecodeError:
-                await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
-                return
+        notice = f"⚠️ {prefix}当前已有正在运行的【网络测速】任务，请勿重复发起，请等待测速完成后再试。"
+        try:
+            await query.answer(notice, show_alert=True)
+        except Exception:
+            pass
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
+        try:
+            await query.edit_message_text(notice, reply_markup=markup)
+        except Exception:
+            pass
+        return
 
-        back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
-        message = format_speedtest_result(data, server_name=sname if is_multi_server_mode() else "")
-        await query.edit_message_text(message, reply_markup=back_markup)
-    except subprocess.TimeoutExpired:
-        await query.edit_message_text("测速超时，请稍后重试", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
-    except Exception as e:
-        logger.error(f"测速失败: {str(e)}")
-        await query.edit_message_text(f"测速失败: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+    async with lock:
+        from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled, run_remote_ssh_command
+
+        try:
+            prefix = f"【{sname}】" if is_multi_server_mode() else ""
+            if is_remote_ssh_enabled(server_cfg):
+                cfg = get_ssh_config(server_config=server_cfg)
+                await query.edit_message_text(f"正在通过{prefix}远程 SSH ({cfg['host']}) 进行测速...\n这可能需要 1~2 分钟...")
+                cmd_str = f"speedtest {'-s ' + ookla_server_id if ookla_server_id != 'auto' else ''} --accept-license --accept-gdpr --format=json"
+                code, output = await asyncio.to_thread(run_remote_ssh_command, cmd_str, timeout=600, server_config=server_cfg)
+                try:
+                    data = json.loads(output)
+                except json.JSONDecodeError:
+                    await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{output[:3000]}")
+                    return
+            else:
+                await query.edit_message_text(f"正在进行{prefix}测速...\n这可能需要几分钟时间...")
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                )
+                try:
+                    data = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    await query.edit_message_text(f"{prefix}测速结果解析失败。原始输出：\n{result.stdout[:3000]}")
+                    return
+
+            back_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⚡ 重新测速", callback_data="main_menu:speedtest"),
+                    InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+                ]
+            ])
+            message = format_speedtest_result(data, server_name=sname if is_multi_server_mode() else "")
+            await query.edit_message_text(message, reply_markup=back_markup)
+        except subprocess.TimeoutExpired:
+            await query.edit_message_text("测速超时，请稍后重试", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))
+        except Exception as e:
+            logger.error(f"测速失败: {str(e)}")
+            await query.edit_message_text(f"测速失败: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]]))

@@ -34,14 +34,29 @@ from utils.state import (
     update_state_keys,
 )
 
-_SERVER_CHANGE_LOCKS: Dict[str, asyncio.Lock] = {}
+from utils.task_locks import get_task_lock, reset_task_locks
+
+
+class _ServerChangeLocksProxy(dict):
+    def __getitem__(self, key):
+        return get_task_lock("change", key)
+
+    def __contains__(self, key):
+        from utils.task_locks import _TASK_LOCKS
+        return key in _TASK_LOCKS.get("change", {})
+
+    def get(self, key, default=None):
+        return get_task_lock("change", key)
+
+    def clear(self):
+        reset_task_locks()
+
+
+_SERVER_CHANGE_LOCKS = _ServerChangeLocksProxy()
 
 
 def get_server_change_lock(server_id: str) -> asyncio.Lock:
-    sid = str(server_id or "default").strip().lower()
-    if sid not in _SERVER_CHANGE_LOCKS:
-        _SERVER_CHANGE_LOCKS[sid] = asyncio.Lock()
-    return _SERVER_CHANGE_LOCKS[sid]
+    return get_task_lock("change", server_id)
 
 
 @dataclass

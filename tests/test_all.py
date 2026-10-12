@@ -2874,6 +2874,214 @@ class TestMainMenuDashboardAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("main_menu:stream_region", callbacks_cb)
 
 
+class TestTaskMutexLocksAsync(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from utils.task_locks import reset_task_locks
+        reset_task_locks()
+
+    def tearDown(self):
+        from utils.task_locks import reset_task_locks
+        reset_task_locks()
+
+    def test_get_task_lock_isolation_and_reuse(self):
+        from utils.task_locks import get_task_lock, is_task_locked, reset_task_locks
+        lock_q1 = get_task_lock("quality", "node_1")
+        lock_q1_dup = get_task_lock("quality", "node_1")
+        self.assertIs(lock_q1, lock_q1_dup)
+
+        lock_q2 = get_task_lock("quality", "node_2")
+        self.assertIsNot(lock_q1, lock_q2)
+
+        lock_stream1 = get_task_lock("stream", "node_1")
+        self.assertIsNot(lock_q1, lock_stream1)
+
+        self.assertFalse(is_task_locked("quality", "node_1"))
+        reset_task_locks()
+        lock_q1_fresh = get_task_lock("quality", "node_1")
+        self.assertIsNot(lock_q1, lock_q1_fresh)
+
+    async def test_ip_quality_mutex_lock(self):
+        from handlers.ip_quality import ip_quality_handler
+        from utils.task_locks import get_task_lock
+
+        lock = get_task_lock("quality", "default")
+        await lock.acquire()
+        try:
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.args = []
+
+            with patch("handlers.ip_quality.run_quality_command") as mock_exec:
+                await ip_quality_handler(mock_update, mock_context)
+                mock_exec.assert_not_called()
+                mock_update.callback_query.edit_message_text.assert_called_once()
+                args, kwargs = mock_update.callback_query.edit_message_text.call_args
+                msg_text = args[0] if args else kwargs.get("text", "")
+                self.assertIn("正在运行的【IP 质量检测】任务", msg_text)
+                markup = kwargs.get("reply_markup")
+                self.assertIsNotNone(markup)
+                cbs = [b.callback_data for row in markup.inline_keyboard for b in row]
+                self.assertIn("main_menu:refresh", cbs)
+        finally:
+            lock.release()
+
+    async def test_stream_check_mutex_lock(self):
+        from handlers.stream_check import stream_check_handler
+        from utils.task_locks import get_task_lock
+
+        lock = get_task_lock("stream", "default")
+        await lock.acquire()
+        try:
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.args = []
+
+            with patch("handlers.stream_check.run_stream_command") as mock_exec:
+                await stream_check_handler(mock_update, mock_context)
+                mock_exec.assert_not_called()
+                mock_update.callback_query.edit_message_text.assert_called_once()
+                args, kwargs = mock_update.callback_query.edit_message_text.call_args
+                msg_text = args[0] if args else kwargs.get("text", "")
+                self.assertIn("正在运行的【流媒体解锁检测】任务", msg_text)
+                markup = kwargs.get("reply_markup")
+                self.assertIsNotNone(markup)
+                cbs = [b.callback_data for row in markup.inline_keyboard for b in row]
+                self.assertIn("main_menu:refresh", cbs)
+        finally:
+            lock.release()
+
+    async def test_speedtest_mutex_lock(self):
+        from handlers.speedtest import speedtest_handler, speedtest_callback
+        from utils.task_locks import get_task_lock
+
+        lock = get_task_lock("speedtest", "default")
+        await lock.acquire()
+        try:
+            # Test handler
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.args = []
+            mock_context.user_data = {}
+
+            with patch("subprocess.run") as mock_sub:
+                await speedtest_handler(mock_update, mock_context)
+                mock_sub.assert_not_called()
+                mock_update.callback_query.edit_message_text.assert_called_once()
+                args, kwargs = mock_update.callback_query.edit_message_text.call_args
+                msg_text = args[0] if args else kwargs.get("text", "")
+                self.assertIn("正在运行的【网络测速】任务", msg_text)
+
+            # Test callback
+            mock_update.callback_query.reset_mock()
+            mock_update.callback_query.data = "speedtest_auto"
+            mock_update.callback_query.answer = AsyncMock()
+            with patch("subprocess.run") as mock_sub:
+                await speedtest_callback(mock_update, mock_context)
+                mock_sub.assert_not_called()
+                mock_update.callback_query.answer.assert_called()
+        finally:
+            lock.release()
+
+    async def test_ip_check_mutex_lock(self):
+        from handlers.ip_check import check_ip_status, do_check_single_server
+        from utils.task_locks import get_task_lock
+
+        lock = get_task_lock("check", "default")
+        await lock.acquire()
+        try:
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.args = []
+
+            await check_ip_status(mock_update, mock_context)
+            mock_update.callback_query.edit_message_text.assert_called_once()
+            args, kwargs = mock_update.callback_query.edit_message_text.call_args
+            msg_text = args[0] if args else kwargs.get("text", "")
+            self.assertIn("正在运行的【IP 连通性检查】任务", msg_text)
+
+            # do_check_single_server directly
+            res = await do_check_single_server({"id": "default", "name": "默认节点"})
+            self.assertIn("正在进行的【IP 连通性检查】任务", res)
+        finally:
+            lock.release()
+
+    async def test_ping_mutex_lock(self):
+        from handlers.ping import ping_handler
+        from utils.task_locks import get_task_lock
+
+        lock = get_task_lock("ping", "default")
+        await lock.acquire()
+        try:
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.args = []
+
+            with patch("subprocess.run") as mock_sub:
+                await ping_handler(mock_update, mock_context)
+                mock_sub.assert_not_called()
+                mock_update.callback_query.edit_message_text.assert_called_once()
+                args, kwargs = mock_update.callback_query.edit_message_text.call_args
+                msg_text = args[0] if args else kwargs.get("text", "")
+                self.assertIn("正在运行的【Ping 延迟测试】任务", msg_text)
+                markup = kwargs.get("reply_markup")
+                self.assertIsNotNone(markup)
+                cbs = [b.callback_data for row in markup.inline_keyboard for b in row]
+                self.assertIn("main_menu:refresh", cbs)
+        finally:
+            lock.release()
+
+    async def test_health_mutex_lock(self):
+        from bot import VPSChangeIPBot
+        from utils.task_locks import get_task_lock
+
+        lock = get_task_lock("health", "global")
+        await lock.acquire()
+        try:
+            bot = VPSChangeIPBot()
+            mock_update = MagicMock()
+            mock_update.message = None
+            mock_update.effective_user.id = 11111
+            mock_update.callback_query.message = MagicMock()
+            mock_update.callback_query.edit_message_text = AsyncMock()
+
+            await bot.health(mock_update, MagicMock())
+            mock_update.callback_query.edit_message_text.assert_called_once()
+            args, kwargs = mock_update.callback_query.edit_message_text.call_args
+            msg_text = args[0] if args else kwargs.get("text", "")
+            self.assertIn("正在进行的【系统体检】任务", msg_text)
+            markup = kwargs.get("reply_markup")
+            self.assertIsNotNone(markup)
+            cbs = [b.callback_data for row in markup.inline_keyboard for b in row]
+            self.assertIn("main_menu:refresh", cbs)
+        finally:
+            lock.release()
+
+
 if __name__ == "__main__":
     unittest.main()
 

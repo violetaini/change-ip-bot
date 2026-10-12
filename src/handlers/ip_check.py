@@ -15,9 +15,10 @@ from utils.network import (
     probe_domestic_http,
     resolve_mainland_target,
 )
+from utils.task_locks import get_task_lock
 
 
-async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) -> str:
+async def _do_check_single_server_internal(server_cfg: Optional[Dict[str, Any]] = None) -> str:
     cfg = server_cfg if server_cfg is not None else config
     sid = str(cfg.get("id") or "default").strip()
     sname = str(cfg.get("name") or sid).strip()
@@ -174,6 +175,20 @@ async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) ->
         return f"{prefix}检查IP状态时出错: {e}"
 
 
+async def do_check_single_server(server_cfg: Optional[Dict[str, Any]] = None) -> str:
+    cfg = server_cfg if server_cfg is not None else config
+    sid = str(cfg.get("id") or "default").strip()
+    sname = str(cfg.get("name") or sid).strip()
+
+    lock = get_task_lock("check", sid)
+    if lock.locked():
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+        return f"⚠️ {prefix}该服务器当前已有正在进行的【IP 连通性检查】任务，请稍后再试"
+
+    async with lock:
+        return await _do_check_single_server_internal(server_cfg)
+
+
 async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_permission(update):
         return
@@ -190,6 +205,28 @@ async def check_ip_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     query = getattr(update, "callback_query", None)
+    if not is_all and server_cfg:
+        sid = str(server_cfg.get("id") or "default").strip()
+        sname = str(server_cfg.get("name") or sid).strip()
+        lock = get_task_lock("check", sid)
+        if lock.locked():
+            prefix = f"【{sname}】" if is_multi_server_mode() else ""
+            notice = f"⚠️ {prefix}当前已有正在运行的【IP 连通性检查】任务，请勿重复发起，请稍候。"
+            check_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔄 重新检查", callback_data="main_menu:check"),
+                    InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+                ]
+            ])
+            if query and query.message:
+                try:
+                    await query.edit_message_text(text=notice, reply_markup=check_keyboard)
+                except Exception:
+                    await msg.reply_text(text=notice, reply_markup=check_keyboard)
+            else:
+                await msg.reply_text(text=notice, reply_markup=check_keyboard)
+            return
+
     if query and query.message:
         try:
             await query.edit_message_text(text="正在检查IP与境内连通性...")

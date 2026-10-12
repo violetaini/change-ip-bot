@@ -2484,130 +2484,145 @@ class VPSChangeIPBot:
         if not await check_user_permission(update):
             return
 
-        checks = []
-        checks.append(f"自动换IP: {'已启用' if config.get('auto_change_enabled') else '已关闭'}")
-        checks.append(f"自动时间: 每天北京时间 {config.get('auto_change_time', '04:00')}")
-        checks.append(
-            "自动重试: "
-            f"最多 {int(config.get('auto_change_retry_count', 5))} 次，"
-            f"间隔 {int(config.get('auto_change_retry_delay_seconds', 60))} 秒"
-        )
+        from utils.task_locks import get_task_lock
 
-        state_file = Path(str(config.get("state_file", "/var/lib/vps-ip-bot/state.json"))).expanduser()
-        state_parent = state_file.parent
-        checks.append(f"状态文件目录: {'可写' if os.access(state_parent, os.W_OK) else '不可写'} ({state_parent})")
+        lock = get_task_lock("health", "global")
+        if lock.locked():
+            notice = "⚠️ 当前已有正在进行的【系统体检】任务，请勿重复发起，请稍候。"
+            buttons = [
+                [
+                    InlineKeyboardButton("🔄 重新体检", callback_data="main_menu:health"),
+                    BACK_TO_MENU_BTN,
+                ]
+            ]
+            await send_or_edit_message(update, notice, reply_markup=InlineKeyboardMarkup(buttons))
+            return
 
-        dep_status = get_system_dependency_status()
-        cairo_info = dep_status["cairo"]["detail"]
-        cairo_icon = "✅" if dep_status["cairo"]["ok"] else "⚠️"
-        checks.append(f"IP质量图片渲染: {cairo_icon} {cairo_info}")
+        async with lock:
+            checks = []
+            checks.append(f"自动换IP: {'已启用' if config.get('auto_change_enabled') else '已关闭'}")
+            checks.append(f"自动时间: 每天北京时间 {config.get('auto_change_time', '04:00')}")
+            checks.append(
+                "自动重试: "
+                f"最多 {int(config.get('auto_change_retry_count', 5))} 次，"
+                f"间隔 {int(config.get('auto_change_retry_delay_seconds', 60))} 秒"
+            )
 
-        font_info = dep_status["font"]["detail"]
-        font_icon = "✅" if dep_status["font"]["ok"] else "⚠️"
-        checks.append(f"中文字体环境: {font_icon} {font_info}")
+            state_file = Path(str(config.get("state_file", "/var/lib/vps-ip-bot/state.json"))).expanduser()
+            state_parent = state_file.parent
+            checks.append(f"状态文件目录: {'可写' if os.access(state_parent, os.W_OK) else '不可写'} ({state_parent})")
 
-        stream_tools = []
-        for name in ("bash", "curl"):
-            stream_tools.append(f"{name}:{'可用' if shutil.which(name) else '不可用'}")
-        checks.append(
-            "流媒体检测: "
-            f"{'已启用' if config.get('stream_check_enabled') else '已关闭'} "
-            f"({', '.join(stream_tools)})"
-        )
+            dep_status = get_system_dependency_status()
+            cairo_info = dep_status["cairo"]["detail"]
+            cairo_icon = "✅" if dep_status["cairo"]["ok"] else "⚠️"
+            checks.append(f"IP质量图片渲染: {cairo_icon} {cairo_info}")
 
-        speedtest_cli = "可用" if shutil.which("speedtest") else "不可用"
-        checks.append(f"speedtest CLI: {speedtest_cli}")
+            font_info = dep_status["font"]["detail"]
+            font_icon = "✅" if dep_status["font"]["ok"] else "⚠️"
+            checks.append(f"中文字体环境: {font_icon} {font_info}")
 
-        servers = get_servers()
-        from utils.remote_ssh import is_remote_ssh_enabled, test_remote_ssh_connectivity, get_ssh_config
-        if not is_multi_server_mode():
-            s = servers[0]
-            try:
-                current_ip = await asyncio.to_thread(get_current_ip)
-                checks.append(f"公网IP: {current_ip}")
-            except Exception as e:
-                checks.append(f"公网IP: 获取失败 ({e})")
+            stream_tools = []
+            for name in ("bash", "curl"):
+                stream_tools.append(f"{name}:{'可用' if shutil.which(name) else '不可用'}")
+            checks.append(
+                "流媒体检测: "
+                f"{'已启用' if config.get('stream_check_enabled') else '已关闭'} "
+                f"({', '.join(stream_tools)})"
+            )
 
-            ip_provider = str(s.get("ip_change_provider", "generic")).strip().lower()
-            if ip_provider == "boil":
-                token_set = bool(str(s.get("boil_api_token", "")).strip())
-                checks.append(f"换IP模式: Boil Network ({'Token已配置' if token_set else 'Token未配置'})")
-            else:
-                api_set = bool(str(s.get("ip_change_api", "")).strip())
-                checks.append(f"换IP模式: 接口模式 ({'API已配置' if api_set else 'API未配置'})")
+            speedtest_cli = "可用" if shutil.which("speedtest") else "不可用"
+            checks.append(f"speedtest CLI: {speedtest_cli}")
 
-            dns_provider = get_dns_provider_name(server_config=s) or "未配置"
-            checks.append(f"DNS更新: {'已启用' if is_dns_update_enabled(server_config=s) else '未启用'} ({dns_provider})")
-
-            record_name = get_dns_record_name(server_config=s).strip()
-            if is_dns_update_enabled(server_config=s) and record_name:
+            servers = get_servers()
+            from utils.remote_ssh import is_remote_ssh_enabled, test_remote_ssh_connectivity, get_ssh_config
+            if not is_multi_server_mode():
+                s = servers[0]
                 try:
-                    records = await asyncio.to_thread(resolve_ipv4_records, record_name)
-                    checks.append(f"DNS解析: {record_name} -> {', '.join(records) if records else '无A记录'}")
+                    current_ip = await asyncio.to_thread(get_current_ip)
+                    checks.append(f"公网IP: {current_ip}")
                 except Exception as e:
-                    checks.append(f"DNS解析: 检查失败 ({e})")
+                    checks.append(f"公网IP: 获取失败 ({e})")
 
-            if is_remote_ssh_enabled(s):
-                ssh_c = get_ssh_config(server_config=s)
-                try:
-                    ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity, server_config=s)
-                    if ok:
-                        checks.append(f"家宽SSH连通: ✅ 正常 (目标: {target_ip}:{ssh_c['port']}, 延迟: {rtt}ms)")
-                    else:
-                        checks.append(f"家宽SSH连通: ⚠️ 无法连通 (目标: {target_ip}:{ssh_c['port']})")
-                except Exception as ex:
-                    checks.append(f"家宽SSH连通: ⚠️ 检测异常 ({ex})")
-            else:
-                checks.append("家宽SSH连通: 未启用 (使用机房本地环境运行)")
-        else:
-            checks.append(f"\n【受管服务器看板 (共 {len(servers)} 台)】")
-            for idx, s in enumerate(servers, 1):
-                sid = s.get("id", "default")
-                sname = s.get("name") or sid
-                provider = s.get("ip_change_provider", "generic")
-                node_lines = [f"{idx}. 🏷️ 【{sname}】 (`{sid}`): 模式={provider}"]
+                ip_provider = str(s.get("ip_change_provider", "generic")).strip().lower()
+                if ip_provider == "boil":
+                    token_set = bool(str(s.get("boil_api_token", "")).strip())
+                    checks.append(f"换IP模式: Boil Network ({'Token已配置' if token_set else 'Token未配置'})")
+                else:
+                    api_set = bool(str(s.get("ip_change_api", "")).strip())
+                    checks.append(f"换IP模式: 接口模式 ({'API已配置' if api_set else 'API未配置'})")
+
+                dns_provider = get_dns_provider_name(server_config=s) or "未配置"
+                checks.append(f"DNS更新: {'已启用' if is_dns_update_enabled(server_config=s) else '未启用'} ({dns_provider})")
+
+                record_name = get_dns_record_name(server_config=s).strip()
+                if is_dns_update_enabled(server_config=s) and record_name:
+                    try:
+                        records = await asyncio.to_thread(resolve_ipv4_records, record_name)
+                        checks.append(f"DNS解析: {record_name} -> {', '.join(records) if records else '无A记录'}")
+                    except Exception as e:
+                        checks.append(f"DNS解析: 检查失败 ({e})")
+
                 if is_remote_ssh_enabled(s):
                     ssh_c = get_ssh_config(server_config=s)
                     try:
                         ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity, server_config=s)
                         if ok:
-                            node_lines.append(f"   • SSH连通: ✅ 正常 ({target_ip}:{ssh_c['port']}, {rtt}ms)")
+                            checks.append(f"家宽SSH连通: ✅ 正常 (目标: {target_ip}:{ssh_c['port']}, 延迟: {rtt}ms)")
                         else:
-                            node_lines.append(f"   • SSH连通: ⚠️ 无法连通 ({target_ip}:{ssh_c['port']})")
+                            checks.append(f"家宽SSH连通: ⚠️ 无法连通 (目标: {target_ip}:{ssh_c['port']})")
                     except Exception as ex:
-                        node_lines.append(f"   • SSH连通: ⚠️ 异常 ({ex})")
+                        checks.append(f"家宽SSH连通: ⚠️ 检测异常 ({ex})")
                 else:
-                    node_lines.append("   • SSH连通: 未启用 (本地机房)")
+                    checks.append("家宽SSH连通: 未启用 (使用机房本地环境运行)")
+            else:
+                checks.append(f"\n【受管服务器看板 (共 {len(servers)} 台)】")
+                for idx, s in enumerate(servers, 1):
+                    sid = s.get("id", "default")
+                    sname = s.get("name") or sid
+                    provider = s.get("ip_change_provider", "generic")
+                    node_lines = [f"{idx}. 🏷️ 【{sname}】 (`{sid}`): 模式={provider}"]
+                    if is_remote_ssh_enabled(s):
+                        ssh_c = get_ssh_config(server_config=s)
+                        try:
+                            ok, target_ip, rtt = await asyncio.to_thread(test_remote_ssh_connectivity, server_config=s)
+                            if ok:
+                                node_lines.append(f"   • SSH连通: ✅ 正常 ({target_ip}:{ssh_c['port']}, {rtt}ms)")
+                            else:
+                                node_lines.append(f"   • SSH连通: ⚠️ 无法连通 ({target_ip}:{ssh_c['port']})")
+                        except Exception as ex:
+                            node_lines.append(f"   • SSH连通: ⚠️ 异常 ({ex})")
+                    else:
+                        node_lines.append("   • SSH连通: 未启用 (本地机房)")
 
-                if is_dns_update_enabled(server_config=s):
-                    rec = get_dns_record_name(server_config=s)
-                    node_lines.append(f"   • DNS更新: 已启用 ({rec})")
-                else:
-                    node_lines.append("   • DNS更新: 未启用")
-                checks.append("\n".join(node_lines))
+                    if is_dns_update_enabled(server_config=s):
+                        rec = get_dns_record_name(server_config=s)
+                        node_lines.append(f"   • DNS更新: 已启用 ({rec})")
+                    else:
+                        node_lines.append("   • DNS更新: 未启用")
+                    checks.append("\n".join(node_lines))
 
-        health_text = "健康检查\n" + "\n".join(
-            f"- {item}"
-            if not item.startswith("\n")
-            and not item.startswith("1")
-            and not item.startswith("2")
-            and not item.startswith("3")
-            and not item.startswith("4")
-            and not item.startswith("5")
-            and not item.startswith("6")
-            and not item.startswith("7")
-            and not item.startswith("8")
-            and not item.startswith("9")
-            else item
-            for item in checks
-        )
-        buttons = [
-            [
-                InlineKeyboardButton("🔄 重新体检", callback_data="main_menu:health"),
-                BACK_TO_MENU_BTN,
+            health_text = "健康检查\n" + "\n".join(
+                f"- {item}"
+                if not item.startswith("\n")
+                and not item.startswith("1")
+                and not item.startswith("2")
+                and not item.startswith("3")
+                and not item.startswith("4")
+                and not item.startswith("5")
+                and not item.startswith("6")
+                and not item.startswith("7")
+                and not item.startswith("8")
+                and not item.startswith("9")
+                else item
+                for item in checks
+            )
+            buttons = [
+                [
+                    InlineKeyboardButton("🔄 重新体检", callback_data="main_menu:health"),
+                    BACK_TO_MENU_BTN,
+                ]
             ]
-        ]
-        await send_or_edit_message(update, health_text, reply_markup=InlineKeyboardMarkup(buttons))
+            await send_or_edit_message(update, health_text, reply_markup=InlineKeyboardMarkup(buttons))
 
     def setup_jobs(self):
         if self.app.job_queue:

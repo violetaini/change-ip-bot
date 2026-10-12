@@ -16,6 +16,7 @@ from handlers.server_selection import resolve_target_server
 from handlers.user_check import check_user_permission
 from utils.logger import logger
 from utils.redact import redact_text
+from utils.task_locks import get_task_lock
 
 
 DEFAULT_STREAM_CMD = "bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)"
@@ -656,140 +657,191 @@ async def stream_check_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     sid = cfg.get("id", "default")
     sname = cfg.get("name", sid)
 
-    user_args = context.args or []
-    detected_country = None
-    if user_args:
-        first_arg = str(user_args[0]).strip()
-        if first_arg in REGION_NAMES or (first_arg.isdigit() and len(first_arg) <= 2):
-            auto_input = first_arg
-        else:
-            auto_input = str(cfg.get("stream_check_input", "2")).strip()
-        region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-    else:
-        auto_detect = bool(cfg.get("stream_check_auto_detect", True))
-        if not auto_detect:
-            # 管理员固定设定模式（互斥：不请求 API）
-            auto_input = str(cfg.get("stream_check_input", "2")).strip()
-            base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-            region_desc = f"{base_name} (管理员固定设定)"
-            logger.info(f"【{sname}】当前处于固定位置模式，跳过 API 探测，直接使用: {auto_input}")
-        else:
-            # 每次先尝试获取当前定位（较短超时时间）
-            detected_country = await asyncio.to_thread(detect_ip_country_code, server_cfg)
-            if detected_country and detected_country in COUNTRY_TO_REGION_INPUT:
-                # 获取成功 -> 写入缓存并使用
-                set_cached_country_code(sid, detected_country)
-                auto_input = COUNTRY_TO_REGION_INPUT[detected_country]
-                base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-                region_desc = f"{base_name} (自动识别: {detected_country})"
-                logger.info(f"【{sname}】通过 IP.SB 自动识别出口 IP 国家: {detected_country} -> 流媒体选项: {auto_input}，已写入缓存")
-            else:
-                # 获取超时或失败 -> 优先使用缓存
-                cached_country = get_cached_country_code(sid)
-                if cached_country and cached_country in COUNTRY_TO_REGION_INPUT:
-                    auto_input = COUNTRY_TO_REGION_INPUT[cached_country]
-                    base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-                    region_desc = f"{base_name} (定位超时，使用缓存: {cached_country})"
-                    logger.warning(f"【{sname}】定位探测超时或未匹配 ({detected_country})，使用缓存国家: {cached_country} -> 流媒体选项: {auto_input}")
-                else:
-                    # 首次超时且无缓存 -> 弹出方案4让用户手动选择，限时1分钟；若超时未选择，自动撤回消息并按方案2 (仅跨国平台: 0) 执行！
-                    token = uuid.uuid4().hex[:8]
-                    event = asyncio.Event()
-                    selection_state = {
-                        "event": event,
-                        "selected_input": None,
-                        "user_id": user_id,
-                    }
-                    _PENDING_STREAM_SELECTIONS[token] = selection_state
-
-                    prefix = f"【{sname}】" if is_multi_server_mode() else ""
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("🇹🇼 台湾 (1)", callback_data=f"stream_sel:{sid}:{token}:1"),
-                            InlineKeyboardButton("🇭🇰 香港 (2)", callback_data=f"stream_sel:{sid}:{token}:2"),
-                            InlineKeyboardButton("🇯🇵 日本 (3)", callback_data=f"stream_sel:{sid}:{token}:3"),
-                        ],
-                        [
-                            InlineKeyboardButton("🇺🇸 北美 (4)", callback_data=f"stream_sel:{sid}:{token}:4"),
-                            InlineKeyboardButton("🇧🇷 南美 (5)", callback_data=f"stream_sel:{sid}:{token}:5"),
-                            InlineKeyboardButton("🇪🇺 欧洲 (6)", callback_data=f"stream_sel:{sid}:{token}:6"),
-                        ],
-                        [
-                            InlineKeyboardButton("🇦🇺 大洋洲 (7)", callback_data=f"stream_sel:{sid}:{token}:7"),
-                            InlineKeyboardButton("🇰🇷 韩国 (8)", callback_data=f"stream_sel:{sid}:{token}:8"),
-                            InlineKeyboardButton("🇸🇬 东南亚 (9)", callback_data=f"stream_sel:{sid}:{token}:9"),
-                        ],
-                        [
-                            InlineKeyboardButton("🌐 仅跨国平台 (0)", callback_data=f"stream_sel:{sid}:{token}:0"),
-                        ],
-                    ]
-                    prompt_text = (
-                        f"⚠️ {prefix}未能自动探测到当前出口 IP 归属地，且本地无历史定位缓存。\n\n"
-                        f"⏱️ 请在 1 分钟内点击下方按钮选择测试区域：\n"
-                        f"（若 1 分钟内未选择，本提示将自动撤回，并按【仅跨国平台】直接执行）"
-                    )
-                    prompt_msg = await msg.reply_text(prompt_text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout=60.0)
-                        auto_input = selection_state.get("selected_input") or "0"
-                        base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
-                        region_desc = f"{base_name} (用户手动选择)"
-                        try:
-                            await prompt_msg.edit_text(f"已选择 [{region_desc}]，正在准备执行测试...", reply_markup=None)
-                        except Exception:
-                            pass
-                        for cc, r_num in COUNTRY_TO_REGION_INPUT.items():
-                            if r_num == auto_input:
-                                set_cached_country_code(sid, cc)
-                                break
-                    except asyncio.TimeoutError:
-                        # 超时未选择：自动撤回本选择消息，并按方案2 (0: 仅跨国平台) 执行！
-                        try:
-                            await prompt_msg.delete()
-                        except Exception as e:
-                            logger.debug(f"撤回超时流媒体选择消息失败: {e}")
-                        auto_input = "0"
-                        base_name = REGION_NAMES.get(auto_input, "仅跨国平台")
-                        region_desc = f"{base_name} (选择超时未作答，自动按通用方案执行)"
-                    finally:
-                        _PENDING_STREAM_SELECTIONS.pop(token, None)
-
-    prefix = f"【{sname}】" if is_multi_server_mode() else ""
-    from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled
-    if is_remote_ssh_enabled(server_cfg):
-        ssh_cfg = get_ssh_config(server_config=server_cfg)
-        await msg.reply_text(
-            f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
-        )
-    else:
-        await msg.reply_text(
-            f"正在{prefix}执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
-        )
-
-    try:
-        stream_cmd = str(cfg.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()
-        try:
-            raw_timeout = int(cfg.get("stream_check_timeout", 1200))
-        except (ValueError, TypeError):
-            raw_timeout = 1200
-        timeout = max(30, min(raw_timeout, 3600))
-        return_code, output, elapsed = await asyncio.to_thread(
-            run_stream_command,
-            stream_cmd,
-            auto_input,
-            timeout,
-            server_cfg,
-        )
+    lock = get_task_lock("stream", sid)
+    if lock.locked():
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+        notice = f"⚠️ {prefix}当前已有正在运行的【流媒体解锁检测】任务，请勿重复发起，请等待完成后再试。"
         stream_back_markup = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎬 重新检测流媒体", callback_data="main_menu:stream"),
                 InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
             ]
         ])
-        await msg.reply_text(prefix + build_stream_summary(return_code, output, elapsed), reply_markup=stream_back_markup)
-    except subprocess.TimeoutExpired:
-        await msg.reply_text(f"{prefix}流媒体检测超时，请稍后再试。")
-    except Exception as e:
-        logger.exception(f"【{sname}】流媒体检测失败: {e}")
-        await msg.reply_text(f"{prefix}流媒体检测失败：{redact_text(str(e))}")
+        query = getattr(update, "callback_query", None)
+        if query and query.message:
+            try:
+                await query.edit_message_text(notice, reply_markup=stream_back_markup)
+            except Exception:
+                await msg.reply_text(notice, reply_markup=stream_back_markup)
+        else:
+            await msg.reply_text(notice, reply_markup=stream_back_markup)
+        return
+
+    async with lock:
+        user_args = context.args or []
+        detected_country = None
+        if user_args:
+            first_arg = str(user_args[0]).strip()
+            if first_arg in REGION_NAMES or (first_arg.isdigit() and len(first_arg) <= 2):
+                auto_input = first_arg
+            else:
+                auto_input = str(cfg.get("stream_check_input", "2")).strip()
+            region_desc = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+        else:
+            auto_detect = bool(cfg.get("stream_check_auto_detect", True))
+            if not auto_detect:
+                # 管理员固定设定模式（互斥：不请求 API）
+                auto_input = str(cfg.get("stream_check_input", "2")).strip()
+                base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                region_desc = f"{base_name} (管理员固定设定)"
+                logger.info(f"【{sname}】当前处于固定位置模式，跳过 API 探测，直接使用: {auto_input}")
+            else:
+                # 每次先尝试获取当前定位（较短超时时间）
+                detected_country = await asyncio.to_thread(detect_ip_country_code, server_cfg)
+                if detected_country and detected_country in COUNTRY_TO_REGION_INPUT:
+                    # 获取成功 -> 写入缓存并使用
+                    set_cached_country_code(sid, detected_country)
+                    auto_input = COUNTRY_TO_REGION_INPUT[detected_country]
+                    base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                    region_desc = f"{base_name} (自动识别: {detected_country})"
+                    logger.info(f"【{sname}】通过 IP.SB 自动识别出口 IP 国家: {detected_country} -> 流媒体选项: {auto_input}，已写入缓存")
+                else:
+                    # 获取超时或失败 -> 优先使用缓存
+                    cached_country = get_cached_country_code(sid)
+                    if cached_country and cached_country in COUNTRY_TO_REGION_INPUT:
+                        auto_input = COUNTRY_TO_REGION_INPUT[cached_country]
+                        base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                        region_desc = f"{base_name} (定位超时，使用缓存: {cached_country})"
+                        logger.warning(f"【{sname}】定位探测超时或未匹配 ({detected_country})，使用缓存国家: {cached_country} -> 流媒体选项: {auto_input}")
+                    else:
+                        # 首次超时且无缓存 -> 弹出方案4让用户手动选择，限时1分钟；若超时未选择，自动撤回消息并按方案2 (仅跨国平台: 0) 执行！
+                        token = uuid.uuid4().hex[:8]
+                        event = asyncio.Event()
+                        selection_state = {
+                            "event": event,
+                            "selected_input": None,
+                            "user_id": user_id,
+                        }
+                        _PENDING_STREAM_SELECTIONS[token] = selection_state
+
+                        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+                        keyboard = [
+                            [
+                                InlineKeyboardButton("🇹🇼 台湾 (1)", callback_data=f"stream_sel:{sid}:{token}:1"),
+                                InlineKeyboardButton("🇭🇰 香港 (2)", callback_data=f"stream_sel:{sid}:{token}:2"),
+                                InlineKeyboardButton("🇯🇵 日本 (3)", callback_data=f"stream_sel:{sid}:{token}:3"),
+                            ],
+                            [
+                                InlineKeyboardButton("🇺🇸 北美 (4)", callback_data=f"stream_sel:{sid}:{token}:4"),
+                                InlineKeyboardButton("🇧🇷 南美 (5)", callback_data=f"stream_sel:{sid}:{token}:5"),
+                                InlineKeyboardButton("🇪🇺 欧洲 (6)", callback_data=f"stream_sel:{sid}:{token}:6"),
+                            ],
+                            [
+                                InlineKeyboardButton("🇦🇺 大洋洲 (7)", callback_data=f"stream_sel:{sid}:{token}:7"),
+                                InlineKeyboardButton("🇰🇷 韩国 (8)", callback_data=f"stream_sel:{sid}:{token}:8"),
+                                InlineKeyboardButton("🇸🇬 东南亚 (9)", callback_data=f"stream_sel:{sid}:{token}:9"),
+                            ],
+                            [
+                                InlineKeyboardButton("🌐 仅跨国平台 (0)", callback_data=f"stream_sel:{sid}:{token}:0"),
+                            ],
+                        ]
+                        prompt_text = (
+                            f"⚠️ {prefix}未能自动探测到当前出口 IP 归属地，且本地无历史定位缓存。\n\n"
+                            f"⏱️ 请在 1 分钟内点击下方按钮选择测试区域：\n"
+                            f"（若 1 分钟内未选择，本提示将自动撤回，并按【仅跨国平台】直接执行）"
+                        )
+                        prompt_msg = await msg.reply_text(prompt_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=60.0)
+                            auto_input = selection_state.get("selected_input") or "0"
+                            base_name = REGION_NAMES.get(auto_input, f"模式 {auto_input}")
+                            region_desc = f"{base_name} (用户手动选择)"
+                            try:
+                                await prompt_msg.edit_text(f"已选择 [{region_desc}]，正在准备执行测试...", reply_markup=None)
+                            except Exception:
+                                pass
+                            for cc, r_num in COUNTRY_TO_REGION_INPUT.items():
+                                if r_num == auto_input:
+                                    set_cached_country_code(sid, cc)
+                                    break
+                        except asyncio.TimeoutError:
+                            # 超时未选择：自动撤回本选择消息，并按方案2 (0: 仅跨国平台) 执行！
+                            try:
+                                await prompt_msg.delete()
+                            except Exception as e:
+                                logger.debug(f"撤回超时流媒体选择消息失败: {e}")
+                            auto_input = "0"
+                            base_name = REGION_NAMES.get(auto_input, "仅跨国平台")
+                            region_desc = f"{base_name} (选择超时未作答，自动按通用方案执行)"
+                        finally:
+                            _PENDING_STREAM_SELECTIONS.pop(token, None)
+
+        prefix = f"【{sname}】" if is_multi_server_mode() else ""
+        from utils.remote_ssh import get_ssh_config, is_remote_ssh_enabled
+        if is_remote_ssh_enabled(server_cfg):
+            ssh_cfg = get_ssh_config(server_config=server_cfg)
+            status_text = (
+                f"正在通过{prefix}远程家宽 SSH ({ssh_cfg['host']}) 执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，双栈耗时约 15~35 秒，请稍等..."
+            )
+        else:
+            status_text = (
+                f"正在{prefix}执行流媒体解锁检测 [{region_desc}]，脚本将自动选择 {auto_input}，请稍等..."
+            )
+
+        query = getattr(update, "callback_query", None)
+        if query and query.message:
+            try:
+                await query.edit_message_text(status_text)
+            except Exception:
+                await msg.reply_text(status_text)
+        else:
+            await msg.reply_text(status_text)
+
+        try:
+            stream_cmd = str(cfg.get("stream_check_cmd") or DEFAULT_STREAM_CMD).strip()
+            try:
+                raw_timeout = int(cfg.get("stream_check_timeout", 1200))
+            except (ValueError, TypeError):
+                raw_timeout = 1200
+            timeout = max(30, min(raw_timeout, 3600))
+            return_code, output, elapsed = await asyncio.to_thread(
+                run_stream_command,
+                stream_cmd,
+                auto_input,
+                timeout,
+                server_cfg,
+            )
+            stream_back_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🎬 重新检测流媒体", callback_data="main_menu:stream"),
+                    InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh"),
+                ]
+            ])
+            summary_msg = prefix + build_stream_summary(return_code, output, elapsed)
+            if query and query.message:
+                try:
+                    await query.edit_message_text(summary_msg, reply_markup=stream_back_markup)
+                except Exception:
+                    await msg.reply_text(summary_msg, reply_markup=stream_back_markup)
+            else:
+                await msg.reply_text(summary_msg, reply_markup=stream_back_markup)
+        except subprocess.TimeoutExpired:
+            err_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
+            if query and query.message:
+                try:
+                    await query.edit_message_text(f"{prefix}流媒体检测超时，请稍后再试。", reply_markup=err_markup)
+                except Exception:
+                    await msg.reply_text(f"{prefix}流媒体检测超时，请稍后再试。", reply_markup=err_markup)
+            else:
+                await msg.reply_text(f"{prefix}流媒体检测超时，请稍后再试。")
+        except Exception as e:
+            logger.exception(f"【{sname}】流媒体检测失败: {e}")
+            err_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu:refresh")]])
+            if query and query.message:
+                try:
+                    await query.edit_message_text(f"{prefix}流媒体检测失败：{redact_text(str(e))}", reply_markup=err_markup)
+                except Exception:
+                    await msg.reply_text(f"{prefix}流媒体检测失败：{redact_text(str(e))}", reply_markup=err_markup)
+            else:
+                await msg.reply_text(f"{prefix}流媒体检测失败：{redact_text(str(e))}")
